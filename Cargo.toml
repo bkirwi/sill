@@ -1,0 +1,13 @@
+[package]
+name = "armrest-editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusttype = "0.8.2"
+clap = "2.32.0"
+uuid = { version = "0.8.2", features = ["v4"] }
+serde = "1.0.136"
+serde_json = "1.0.78"
+armrest = { path = "../armrest" }
+libremarkable = { path = "../libremarkable" }
