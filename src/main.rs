@@ -1,22 +1,19 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, ErrorKind};
+use std::io;
+use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::time::Instant;
-use std::{fs, io};
 
 use armrest::app;
 use armrest::app::{Applet, Component};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
-use armrest::ui::canvas::{Canvas, Fragment};
-use armrest::ui::{Region, Side, Text, TextFragment, View, Widget};
+use armrest::ui::canvas::Fragment;
+use armrest::ui::{Side, Text, TextFragment, View, Widget};
 use clap::Arg;
-use libremarkable::cgmath::Point2;
 use libremarkable::framebuffer::cgmath::Vector2;
-use libremarkable::framebuffer::common::{color, DISPLAYHEIGHT, DISPLAYWIDTH};
-use libremarkable::framebuffer::FramebufferDraw;
+use libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
 use once_cell::sync::Lazy;
 use rusttype::{Font, Scale};
 use serde::{Deserialize, Serialize};
@@ -171,7 +168,7 @@ impl<'a> TemplateFile<'a> {
     }
 
     fn to_templates(mut self, size: i32) -> Vec<CharData> {
-        let mut char_data = |ch: char, strings: Vec<Cow<str>>| CharData {
+        let char_data = |ch: char, strings: Vec<Cow<str>>| CharData {
             char: ch,
             label: Text::literal(size, &*FONT, &format!("{}", ch)),
             templates: strings
@@ -183,7 +180,7 @@ impl<'a> TemplateFile<'a> {
         let mut result = vec![];
 
         for ch in PRINTABLE_ASCII.chars() {
-            result.push(char_data(ch, self.templates.remove(&ch).unwrap_or(vec![])))
+            result.push(char_data(ch, self.templates.remove(&ch).unwrap_or_default()))
         }
 
         for (ch, strings) in self.templates {
@@ -209,7 +206,7 @@ impl CharRecognizer {
                 if template.ink.len() == 0 {
                     continue;
                 }
-                templates.push(ink_to_points(&template.ink, &metrics));
+                templates.push(ink_to_points(&template.ink, metrics));
                 chars.push(ts.char);
             }
         }
@@ -286,7 +283,7 @@ impl Editor {
             Err(e) if e.kind() == ErrorKind::NotFound => TemplateFile {
                 templates: BTreeMap::new(),
             },
-            Err(e) => Err(e)?,
+            Err(e) => return Err(e),
         };
 
         self.templates = data.to_templates(self.metrics.height);
@@ -327,7 +324,7 @@ impl Editor {
             });
             draw_label(row, margin_view);
             for col in 0..self.metrics.cols {
-                let mut char_view = line_view.split_off(Side::Left, self.metrics.width);
+                let char_view = line_view.split_off(Side::Left, self.metrics.width);
                 draw_cell(row, col, char_view);
             }
             line_view.draw(&Border {
@@ -367,7 +364,7 @@ impl Widget for Editor {
             Tab::Edit => {
                 self.draw_grid(
                     view,
-                    |n, v| {},
+                    |_n, _v| {},
                     |row, col, mut char_view| {
                         let ch = self.contents.get(row).and_then(|l| l.get(col));
                         char_view
