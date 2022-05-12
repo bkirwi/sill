@@ -109,41 +109,22 @@ pub enum Tab {
 }
 
 struct Editor {
-    path: Option<PathBuf>,
-
-    template_path: PathBuf,
-
     metrics: Metrics,
 
+    // tabs
     tab: Tab,
-
     tab_buttons: Vec<Text<Msg>>,
 
+    // template stuff stuff
+    template_path: PathBuf,
     template_offset: usize,
-    templates: Vec<CharData>,
-
-    // a couple vectors for doing dollar matches
+    templates: Vec<CharTemplates>,
     char_recognizer: CharRecognizer,
 
+    // text editor stuff
+    path: Option<PathBuf>, // None if we haven't chosen a name yet.
     row_offset: usize,
     contents: Vec<Vec<EditChar>>,
-}
-
-/// Convert an ink to a point cloud.
-///
-/// This differs from the suggested behaviour for $P, since it recenters and scales based on a
-/// bounding box instead of the data itself. This is important for textual data, since the only
-/// difference between an apostrophe and a comma is the position in the grid.
-fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
-    let mut points = Points::resample(ink);
-
-    let mut center = points.centroid();
-    center.y = metrics.height as f32 / 2.0;
-    points.recenter_on(center);
-
-    points.scale_by(1.0 / metrics.width as f32);
-
-    points
 }
 
 impl Editor {
@@ -265,7 +246,7 @@ impl Widget for Editor {
                         self.row_offset + self.metrics.rows
                     ),
                 );
-                text.render(view);
+                text.render_placed(view, 0.5, 0.5);
             }
             Tab::Template => {
                 self.draw_grid(
