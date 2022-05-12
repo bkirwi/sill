@@ -20,16 +20,23 @@ use serde::{Deserialize, Serialize};
 use xdg::BaseDirectories;
 
 use grid_ui::*;
+use hwr::*;
 
 mod grid_ui;
+mod hwr;
 
 static FONT: Lazy<Font<'static>> = Lazy::new(|| {
     let font_bytes: &[u8] = include_bytes!("../fonts/Inconsolata-Regular.ttf");
     Font::from_bytes(font_bytes).unwrap()
 });
 
-// A set of characters that we always include in the template, even when not explicitly configured.
-const PRINTABLE_ASCII: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+fn text_literal(height: i32, text: &str) -> TextFragment {
+    // NB: Inconsolata has zero line gap.
+    Text::builder(height, &*FONT)
+        .literal(text)
+        .into_text()
+        .to_fragment()
+}
 
 static BASE_DIRS: Lazy<BaseDirectories> =
     Lazy::new(|| BaseDirectories::with_prefix("armrest-editor").unwrap());
@@ -39,7 +46,7 @@ const SCREEN_WIDTH: i32 = DISPLAYWIDTH as i32;
 const TOP_MARGIN: i32 = 100;
 const LEFT_MARGIN: i32 = 100;
 
-const DEFAULT_CHAR_HEIGHT: i32 = 50;
+const DEFAULT_CHAR_HEIGHT: i32 = 40;
 
 const TEMPLATE_FILE: &str = "templates.json";
 
@@ -49,10 +56,11 @@ It's a nice editor.
 ";
 
 #[derive(Clone, Debug)]
-enum Msg {
-    SwitchTab(Tab),
+pub enum Msg {
+    SwitchTab { tab: Tab },
     Write { row: usize, col: usize, ink: Ink },
     Erase { row: usize, ink: Ink },
+    Swipe { towards: Side },
 }
 
 #[derive(Hash, Clone)]
@@ -62,7 +70,7 @@ struct EditChar {
 }
 
 #[derive(Hash, Clone)]
-struct Metrics {
+pub struct Metrics {
     height: i32,
     width: i32,
     baseline: i32,
@@ -75,11 +83,9 @@ struct Metrics {
 impl Metrics {
     fn new(height: i32) -> Metrics {
         let scale = Scale::uniform(height as f32);
-        let h_metrics = FONT.glyph(' ').scaled(scale).h_metrics();
         let v_metrics = FONT.v_metrics(scale);
-
+        let h_metrics = FONT.glyph(' ').scaled(scale).h_metrics();
         let width = h_metrics.advance_width.ceil() as i32;
-        let baseline = (v_metrics.ascent as f32).ceil() as i32 + 1;
 
         let rows = (SCREEN_HEIGHT - TOP_MARGIN * 2) / height;
         let cols = (SCREEN_WIDTH - LEFT_MARGIN * 2) / width;
@@ -87,7 +93,7 @@ impl Metrics {
         Metrics {
             height,
             width,
-            baseline,
+            baseline: v_metrics.ascent as i32 + 1,
             rows: rows as usize,
             cols: cols as usize,
             left_margin: LEFT_MARGIN,
@@ -97,33 +103,9 @@ impl Metrics {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Tab {
+pub enum Tab {
     Edit,
     Template,
-}
-
-/// Why both? We don't want to constantly lose precision reserializing.
-struct Template {
-    ink: Ink,
-    serialized: String,
-}
-
-impl Template {
-    fn from_ink(ink: Ink) -> Template {
-        let serialized = ink.to_string();
-        Template { ink, serialized }
-    }
-
-    fn from_string(serialized: String) -> Template {
-        let ink = Ink::from_string(&serialized);
-        Template { ink, serialized }
-    }
-}
-
-struct CharData {
-    char: char,
-    label: Text<Msg>,
-    templates: Vec<Template>,
 }
 
 struct Editor {
@@ -137,126 +119,14 @@ struct Editor {
 
     tab_buttons: Vec<Text<Msg>>,
 
+    template_offset: usize,
     templates: Vec<CharData>,
 
     // a couple vectors for doing dollar matches
     char_recognizer: CharRecognizer,
 
-    // the contents of the file.
+    row_offset: usize,
     contents: Vec<Vec<EditChar>>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct TemplateFile<'a> {
-    templates: BTreeMap<char, Vec<Cow<'a, str>>>,
-}
-
-impl<'a> TemplateFile<'a> {
-    fn new(templates: &'a [CharData]) -> TemplateFile<'a> {
-        let mut entries = BTreeMap::new();
-        for ts in templates {
-            let strings: Vec<Cow<str>> = ts
-                .templates
-                .iter()
-                .map(|t| Cow::Borrowed(t.serialized.as_ref()))
-                .collect();
-            if !strings.is_empty() {
-                entries.insert(ts.char, strings);
-            }
-        }
-        TemplateFile { templates: entries }
-    }
-
-    fn to_templates(mut self, size: i32) -> Vec<CharData> {
-        let char_data = |ch: char, strings: Vec<Cow<str>>| CharData {
-            char: ch,
-            label: Text::literal(size, &*FONT, &format!("{}", ch)),
-            templates: strings
-                .into_iter()
-                .map(|s| Template::from_string(s.into_owned()))
-                .collect(),
-        };
-
-        let mut result = vec![];
-
-        for ch in PRINTABLE_ASCII.chars() {
-            result.push(char_data(ch, self.templates.remove(&ch).unwrap_or_default()))
-        }
-
-        for (ch, strings) in self.templates {
-            result.push(char_data(ch, strings));
-        }
-
-        result
-    }
-}
-
-struct CharRecognizer {
-    templates: Vec<Points>,
-    chars: Vec<char>,
-    metrics: Metrics,
-}
-
-impl CharRecognizer {
-    fn new(input: &[CharData], metrics: &Metrics) -> CharRecognizer {
-        let mut templates = vec![];
-        let mut chars = vec![];
-        for ts in input {
-            for template in &ts.templates {
-                if template.ink.len() == 0 {
-                    continue;
-                }
-                templates.push(ink_to_points(&template.ink, metrics));
-                chars.push(ts.char);
-            }
-        }
-        CharRecognizer {
-            templates,
-            chars,
-            metrics: metrics.clone(),
-        }
-    }
-
-    fn best_match(&self, ink: &Ink, threshold: f32) -> Option<char> {
-        if self.templates.is_empty() {
-            return None;
-        }
-
-        let query = ink_to_points(ink, &self.metrics);
-        let (best, score) = query.recognize(&self.templates);
-        if score > threshold {
-            None
-        } else {
-            Some(self.chars[best])
-        }
-    }
-
-    fn promote(&mut self, index: usize) {
-        if index == 0 || index >= self.templates.len() {
-            return;
-        }
-        self.templates.swap(0, index);
-        self.chars.swap(0, index)
-    }
-
-    fn look_for_trouble(&mut self) {
-        let count = self.templates.len();
-        if count < 2 {
-            return;
-        }
-        for i in 0..count {
-            self.promote(i);
-            let index = self.templates[0].recognize(&self.templates[1..]).0 + 1;
-            let expected = self.chars[0];
-            let actual = self.chars[index];
-            if expected != actual {
-                eprintln!(
-                    "Yikes! Closest match for a {} is actually {}",
-                    expected, actual
-                );
-            }
-        }
-    }
 }
 
 /// Convert an ink to a point cloud.
@@ -280,9 +150,7 @@ impl Editor {
     fn load_templates(&mut self) -> io::Result<()> {
         let data = match File::open(&self.template_path) {
             Ok(file) => serde_json::from_reader(file)?,
-            Err(e) if e.kind() == ErrorKind::NotFound => TemplateFile {
-                templates: BTreeMap::new(),
-            },
+            Err(e) if e.kind() == ErrorKind::NotFound => TemplateFile::new(&[]),
             Err(e) => return Err(e),
         };
 
@@ -301,7 +169,7 @@ impl Editor {
 
     fn draw_grid(
         &self,
-        mut view: View<Msg>,
+        view: &mut View<Msg>,
         mut draw_label: impl FnMut(usize, View<Msg>),
         mut draw_cell: impl FnMut(usize, usize, View<Msg>),
     ) {
@@ -360,12 +228,23 @@ impl Widget for Editor {
         }
         header.leave_rest_blank();
 
+        view.handlers().on_swipe(
+            Side::Bottom,
+            Msg::Swipe {
+                towards: Side::Bottom,
+            },
+        );
+
+        view.handlers()
+            .on_swipe(Side::Top, Msg::Swipe { towards: Side::Top });
+
         match self.tab {
             Tab::Edit => {
                 self.draw_grid(
-                    view,
+                    &mut view,
                     |_n, _v| {},
                     |row, col, mut char_view| {
+                        let row = row + self.row_offset;
                         let ch = self.contents.get(row).and_then(|l| l.get(col));
                         char_view
                             .handlers()
@@ -377,11 +256,22 @@ impl Widget for Editor {
                         char_view.draw(&grid);
                     },
                 );
+                let text = Text::literal(
+                    DEFAULT_CHAR_HEIGHT,
+                    &*FONT,
+                    &format!(
+                        "Lines {}-{}",
+                        self.row_offset,
+                        self.row_offset + self.metrics.rows
+                    ),
+                );
+                text.render(view);
             }
             Tab::Template => {
                 self.draw_grid(
-                    view,
+                    &mut view,
                     |row, label_view| {
+                        let row = row + self.template_offset;
                         if let Some(templates) = self.templates.get(row) {
                             let char_text = Text::literal(
                                 self.metrics.height,
@@ -392,27 +282,24 @@ impl Widget for Editor {
                         }
                     },
                     |row, col, mut template_view| {
-                        if let Some(char_data) = self.templates.get(row) {
-                            let grid = GridCell {
-                                baseline: self.metrics.baseline,
-                                char: Some(
-                                    Text::literal(
-                                        self.metrics.height,
-                                        &*FONT,
-                                        &char_data.char.to_string(),
-                                    )
-                                    .to_fragment()
-                                    .with_weight(0.2),
-                                ),
-                            };
+                        let row = row + self.template_offset;
+                        let maybe_char = self.templates.get(row);
+                        let grid = GridCell {
+                            baseline: self.metrics.baseline,
+                            char: maybe_char.map(|char_data| {
+                                text_literal(self.metrics.height, &char_data.char.to_string())
+                                    .with_weight(0.2)
+                            }),
+                        };
+                        if let Some(char_data) = maybe_char {
+                            template_view
+                                .handlers()
+                                .on_ink(|ink| Msg::Write { row, col, ink });
                             if let Some(template) = char_data.templates.get(col) {
-                                template_view
-                                    .handlers()
-                                    .on_ink(|ink| Msg::Write { row, col, ink });
                                 template_view.annotate(&template.ink);
-                                template_view.draw(&grid);
                             }
                         }
+                        template_view.draw(&grid);
                     },
                 );
             }
@@ -422,7 +309,8 @@ impl Widget for Editor {
 
 const TEXT_WEIGHT: f32 = 0.9;
 
-/// Naively, a mark is a "scratch out" if it has a lot of ink.
+/// Naively, a mark is a "scratch out" if it has a lot of ink per unit area,
+/// and also isn't extremely tiny.
 fn is_erase(ink: &Ink) -> bool {
     let size = ink.bounds().size();
     let area = (size.x * size.y).max(500);
@@ -448,20 +336,22 @@ impl Applet for Editor {
                         }
                     };
 
-                    self.contents.resize(row + 1, vec![]);
+                    if self.contents.len() <= row {
+                        self.contents.resize(row + 1, vec![]);
+                    }
                     let row = &mut self.contents[row];
-                    row.resize(
-                        col + 1,
-                        EditChar {
-                            value: ' ',
-                            rendered: None,
-                        },
-                    );
+                    if row.len() <= col {
+                        row.resize(
+                            col + 1,
+                            EditChar {
+                                value: ' ',
+                                rendered: None,
+                            },
+                        );
+                    }
 
-                    let new_text =
-                        Text::literal(self.metrics.height, &*FONT, &best_char.to_string())
-                            .to_fragment()
-                            .with_weight(TEXT_WEIGHT);
+                    let new_text = text_literal(self.metrics.height, &best_char.to_string())
+                        .with_weight(TEXT_WEIGHT);
                     row[col] = EditChar {
                         value: best_char,
                         rendered: Some(new_text),
@@ -482,7 +372,7 @@ impl Applet for Editor {
                     }
                 }
             },
-            Msg::SwitchTab(tab) => {
+            Msg::SwitchTab { tab } => {
                 if tab != Tab::Template && self.tab == Tab::Template {
                     self.save_templates().expect("saving template file");
                     self.char_recognizer = CharRecognizer::new(&self.templates, &self.metrics);
@@ -490,6 +380,27 @@ impl Applet for Editor {
                 self.tab = tab;
             }
             Msg::Erase { .. } => {}
+            Msg::Swipe { towards } => match self.tab {
+                // TODO: abstract over the pattern here.
+                Tab::Edit => match towards {
+                    Side::Top => {
+                        self.row_offset += self.metrics.rows - 1;
+                    }
+                    Side::Bottom => {
+                        self.row_offset -= (self.metrics.rows - 1).min(self.row_offset);
+                    }
+                    _ => {}
+                },
+                Tab::Template => match towards {
+                    Side::Top => {
+                        self.template_offset += self.metrics.rows - 1;
+                    }
+                    Side::Bottom => {
+                        self.template_offset -= (self.metrics.rows - 1).min(self.template_offset);
+                    }
+                    _ => {}
+                },
+            },
         }
 
         None
@@ -516,9 +427,7 @@ fn main() {
                 .map(|ch| EditChar {
                     value: ch,
                     rendered: Some(
-                        Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, &ch.to_string())
-                            .to_fragment()
-                            .with_weight(TEXT_WEIGHT),
+                        text_literal(DEFAULT_CHAR_HEIGHT, &ch.to_string()).with_weight(TEXT_WEIGHT),
                     ),
                 })
                 .collect()
@@ -533,7 +442,7 @@ fn main() {
 
     fn button(text: &str, tab: Tab) -> Text<Msg> {
         Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT)
-            .message(Msg::SwitchTab(tab))
+            .message(Msg::SwitchTab { tab })
             .literal(text)
             .into_text()
     }
@@ -547,8 +456,10 @@ fn main() {
         metrics,
         tab: Tab::Template,
         tab_buttons,
+        template_offset: 0,
         templates: vec![],
         char_recognizer,
+        row_offset: 0,
         contents,
     };
 

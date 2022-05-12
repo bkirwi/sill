@@ -43,12 +43,17 @@ pub struct GridCell {
 impl Fragment for GridCell {
     fn draw(&self, canvas: &mut Canvas) {
         let size = canvas.bounds().size();
+        let top_line = self.baseline - size.y * 3 / 4;
+        let mid_line = self.baseline - size.y * 2 / 4;
+        let bottom_line = self.baseline - size.y * 1 / 4;
         for y in 0..size.y {
             canvas.write(0, y, color::GRAY(120));
         }
         for x in 1..size.x {
+            canvas.write(x, top_line, color::GRAY(40));
+            canvas.write(x, mid_line, color::GRAY(40));
+            canvas.write(x, bottom_line, color::GRAY(40));
             canvas.write(x, self.baseline, color::GRAY(120));
-            canvas.write(x, 8, color::GRAY(40));
         }
         if let Some(c) = &self.char {
             c.draw(canvas);
