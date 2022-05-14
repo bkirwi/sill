@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
@@ -58,7 +59,7 @@ It's a nice editor.
 #[derive(Clone, Debug)]
 pub enum Msg {
     SwitchTab { tab: Tab },
-    Write { row: usize, col: usize, ink: Ink },
+    Write { row: usize, ink: Ink },
     Erase { row: usize, ink: Ink },
     Swipe { towards: Side },
 }
@@ -151,6 +152,7 @@ impl Editor {
     fn draw_grid(
         &self,
         view: &mut View<Msg>,
+        row_offset: usize,
         mut draw_label: impl FnMut(usize, View<Msg>),
         mut draw_cell: impl FnMut(usize, usize, View<Msg>),
     ) {
@@ -161,7 +163,7 @@ impl Editor {
             start_offset: self.metrics.left_margin - 4,
             end_offset: self.metrics.right_margin - 2,
         });
-        for row in 0..self.metrics.rows {
+        for row in row_offset..(row_offset + self.metrics.rows) {
             let mut line_view = view.split_off(Side::Top, self.metrics.height);
             let mut margin_view = line_view.split_off(Side::Left, LEFT_MARGIN);
             margin_view.split_off(Side::Right, 10).draw(&Border {
@@ -172,6 +174,7 @@ impl Editor {
                 end_offset: 0,
             });
             draw_label(row, margin_view);
+            line_view.handlers().on_ink(|ink| Msg::Write { row, ink });
             for col in 0..self.metrics.cols {
                 let char_view = line_view.split_off(Side::Left, self.metrics.width);
                 draw_cell(row, col, char_view);
@@ -221,15 +224,21 @@ impl Widget for Editor {
 
         match self.tab {
             Tab::Edit => {
+                let line_end = EditChar {
+                    value: '\n',
+                    rendered: Some(text_literal(self.metrics.height, "⏎").with_weight(0.5)),
+                };
                 self.draw_grid(
                     &mut view,
+                    self.row_offset,
                     |_n, _v| {},
                     |row, col, mut char_view| {
-                        let row = row + self.row_offset;
-                        let ch = self.contents.get(row).and_then(|l| l.get(col));
-                        char_view
-                            .handlers()
-                            .on_ink(|ink| Msg::Write { row, col, ink });
+                        let row = self.contents.get(row);
+                        let ch = row.and_then(|l| match col.cmp(&l.len()) {
+                            Ordering::Less => l.get(col),
+                            Ordering::Equal => Some(&line_end),
+                            Ordering::Greater => None,
+                        });
                         let grid = GridCell {
                             baseline: self.metrics.baseline,
                             char: ch.and_then(|c| c.rendered.clone()),
@@ -251,8 +260,8 @@ impl Widget for Editor {
             Tab::Template => {
                 self.draw_grid(
                     &mut view,
+                    self.template_offset,
                     |row, label_view| {
-                        let row = row + self.template_offset;
                         if let Some(templates) = self.templates.get(row) {
                             let char_text = Text::literal(
                                 self.metrics.height,
@@ -263,7 +272,6 @@ impl Widget for Editor {
                         }
                     },
                     |row, col, mut template_view| {
-                        let row = row + self.template_offset;
                         let maybe_char = self.templates.get(row);
                         let grid = GridCell {
                             baseline: self.metrics.baseline,
@@ -273,9 +281,6 @@ impl Widget for Editor {
                             }),
                         };
                         if let Some(char_data) = maybe_char {
-                            template_view
-                                .handlers()
-                                .on_ink(|ink| Msg::Write { row, col, ink });
                             if let Some(template) = char_data.templates.get(col) {
                                 template_view.annotate(&template.ink);
                             }
@@ -299,60 +304,140 @@ fn is_erase(ink: &Ink) -> bool {
     ratio >= 0.2
 }
 
+enum InkType {
+    Strikethrough { start: usize, end: usize },
+    Scratch { col: usize },
+    Glyph { col: usize },
+    Junk,
+}
+
+impl InkType {
+    fn classify(metrics: &Metrics, ink: &Ink) -> InkType {
+        let min_x = ink.x_range.min / metrics.width as f32;
+        let max_x = ink.x_range.max / metrics.width as f32;
+        let min_y = ink.y_range.min / metrics.height as f32;
+        let max_y = ink.y_range.max / metrics.height as f32;
+        let col = ((min_x + max_x) / 2.0).floor() as usize;
+
+        if (max_x - min_x) > 1.5 {
+            // long!
+            if (max_y - min_y) < 0.5 {
+                InkType::Strikethrough {
+                    start: min_x.round() as usize,
+                    end: max_x.round() as usize,
+                }
+            } else {
+                InkType::Junk
+            }
+        } else {
+            if is_erase(&ink) {
+                InkType::Scratch { col }
+            } else {
+                InkType::Glyph { col }
+            }
+        }
+    }
+}
+
 impl Applet for Editor {
     type Upstream = ();
 
     fn update(&mut self, message: Self::Message) -> Option<Self::Upstream> {
         match message {
-            Msg::Write { row, col, ink } => match self.tab {
-                Tab::Edit => {
-                    let best_char = if is_erase(&ink) {
-                        ' '
-                    } else {
-                        match self.char_recognizer.best_match(&ink, f32::MAX) {
-                            None => {
+            Msg::Write { row, ink } => {
+                let ink_type = InkType::classify(&self.metrics, &ink);
+                match self.tab {
+                    Tab::Edit => {
+                        let (col, best_char) = match ink_type {
+                            InkType::Scratch { col } => (col, ' '),
+                            InkType::Glyph { col } => {
+                                match self.char_recognizer.best_match(&ink, f32::MAX) {
+                                    None => {
+                                        return None;
+                                    }
+                                    Some(c) => (col, c),
+                                }
+                            }
+                            InkType::Strikethrough { start, end } => {
+                                let rows = self.contents.len();
+                                if row < rows {
+                                    let line_len = self.contents[row].len();
+                                    // If the newline has been struck through,
+                                    // prepare to add the contents of the next line to the end of this one.
+                                    let to_extend = if end > line_len && row + 1 < rows {
+                                        Some(self.contents.remove(row + 1))
+                                    } else {
+                                        None
+                                    };
+                                    let line = &mut self.contents[row];
+                                    // Remove the struck-through characters from the vector.
+                                    line.drain(start.min(line_len)..end.min(line_len));
+                                    if let Some(rest) = to_extend {
+                                        line.extend(rest);
+                                    }
+                                }
                                 return None;
                             }
-                            Some(c) => c,
+                            InkType::Junk => {
+                                return None;
+                            }
+                        };
+
+                        if self.contents.len() <= row {
+                            self.contents.resize(row + 1, vec![]);
                         }
-                    };
+                        let row = &mut self.contents[row];
+                        if row.len() <= col {
+                            row.resize(
+                                col + 1,
+                                EditChar {
+                                    value: ' ',
+                                    rendered: None,
+                                },
+                            );
+                        }
 
-                    if self.contents.len() <= row {
-                        self.contents.resize(row + 1, vec![]);
+                        let new_text = text_literal(self.metrics.height, &best_char.to_string())
+                            .with_weight(TEXT_WEIGHT);
+                        row[col] = EditChar {
+                            value: best_char,
+                            rendered: Some(new_text),
+                        };
                     }
-                    let row = &mut self.contents[row];
-                    if row.len() <= col {
-                        row.resize(
-                            col + 1,
-                            EditChar {
-                                value: ' ',
-                                rendered: None,
-                            },
-                        );
-                    }
-
-                    let new_text = text_literal(self.metrics.height, &best_char.to_string())
-                        .with_weight(TEXT_WEIGHT);
-                    row[col] = EditChar {
-                        value: best_char,
-                        rendered: Some(new_text),
-                    };
-                }
-                Tab::Template => {
-                    if let Some(char_data) = self.templates.get_mut(row) {
-                        if let Some(prev) = char_data.templates.get_mut(col) {
-                            if is_erase(&ink) {
-                                prev.ink.clear();
-                                prev.serialized.clear();
-                            } else {
-                                prev.ink.append(ink, 0.5);
-                                // TODO: put this off?
-                                prev.serialized = prev.ink.to_string();
+                    Tab::Template => {
+                        if let Some(char_data) = self.templates.get_mut(row) {
+                            match InkType::classify(&self.metrics, &ink) {
+                                InkType::Strikethrough { start, end } => {
+                                    for t in &mut char_data.templates[start..end] {
+                                        t.serialized.clear();
+                                        t.ink.clear();
+                                    }
+                                }
+                                InkType::Scratch { col } => {
+                                    if let Some(prev) = char_data.templates.get_mut(col) {
+                                        prev.ink.clear();
+                                        prev.serialized.clear();
+                                    }
+                                }
+                                InkType::Glyph { col } => {
+                                    if let Some(prev) = char_data.templates.get_mut(col) {
+                                        prev.ink.append(
+                                            ink.translate(-Vector2::new(
+                                                (col as f32 * self.metrics.width as f32),
+                                                0.0,
+                                            )),
+                                            0.5,
+                                        );
+                                        // TODO: put this off?
+                                        prev.serialized = prev.ink.to_string();
+                                    }
+                                }
+                                InkType::Junk => {}
                             }
                         }
                     }
                 }
-            },
+            }
             Msg::SwitchTab { tab } => {
                 if tab != Tab::Template && self.tab == Tab::Template {
                     self.save_templates().expect("saving template file");

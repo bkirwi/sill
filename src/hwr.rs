@@ -1,4 +1,4 @@
-use crate::{Metrics, Msg, FONT};
+use crate::{Metrics, FONT};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 use armrest::ui::Text;
@@ -51,7 +51,6 @@ impl<'a> TemplateFile<'a> {
     pub fn to_templates(mut self, size: i32) -> Vec<CharTemplates> {
         let char_data = |ch: char, strings: Vec<Cow<str>>| CharTemplates {
             char: ch,
-            label: Text::literal(size, &*FONT, &format!("{}", ch)),
             templates: strings
                 .into_iter()
                 .map(|s| Template::from_string(s.into_owned()))
@@ -96,7 +95,6 @@ impl Template {
 /// All the templates that correspond to a particular char, plus metadata.
 pub struct CharTemplates {
     pub char: char,
-    pub label: Text<Msg>,
     pub templates: Vec<Template>,
 }
 
