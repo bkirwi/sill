@@ -1,7 +1,7 @@
-use crate::{Metrics, FONT};
+use crate::Metrics;
 use armrest::dollar::Points;
 use armrest::ink::Ink;
-use armrest::ui::Text;
+
 use serde::Deserialize;
 use serde::Serialize;
 use std::borrow::Cow;
@@ -48,7 +48,7 @@ impl<'a> TemplateFile<'a> {
         TemplateFile { templates: entries }
     }
 
-    pub fn to_templates(mut self, size: i32) -> Vec<CharTemplates> {
+    pub fn to_templates(mut self, _size: i32) -> Vec<CharTemplates> {
         let char_data = |ch: char, strings: Vec<Cow<str>>| CharTemplates {
             char: ch,
             templates: strings

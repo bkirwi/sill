@@ -1,6 +1,5 @@
-use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+
 use std::fs::File;
 use std::io;
 use std::io::ErrorKind;
@@ -8,7 +7,7 @@ use std::path::PathBuf;
 
 use armrest::app;
 use armrest::app::{Applet, Component};
-use armrest::dollar::Points;
+
 use armrest::ink::Ink;
 use armrest::ui::canvas::Fragment;
 use armrest::ui::{Side, Text, TextFragment, View, Widget};
@@ -17,7 +16,7 @@ use libremarkable::framebuffer::cgmath::Vector2;
 use libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
 use once_cell::sync::Lazy;
 use rusttype::{Font, Scale};
-use serde::{Deserialize, Serialize};
+
 use xdg::BaseDirectories;
 
 use grid_ui::*;
@@ -232,7 +231,7 @@ impl Widget for Editor {
                     &mut view,
                     self.row_offset,
                     |_n, _v| {},
-                    |row, col, mut char_view| {
+                    |row, col, char_view| {
                         let row = self.contents.get(row);
                         let ch = row.and_then(|l| match col.cmp(&l.len()) {
                             Ordering::Less => l.get(col),
@@ -423,7 +422,7 @@ impl Applet for Editor {
                                     if let Some(prev) = char_data.templates.get_mut(col) {
                                         prev.ink.append(
                                             ink.translate(-Vector2::new(
-                                                (col as f32 * self.metrics.width as f32),
+                                                col as f32 * self.metrics.width as f32,
                                                 0.0,
                                             )),
                                             0.5,
