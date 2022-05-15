@@ -7,8 +7,10 @@ use serde::Serialize;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-// A set of characters that we always include in the template, even when not explicitly configured.
-pub const PRINTABLE_ASCII: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+/// A set of characters that we always include in the template, even when not explicitly configured.
+/// Aside from being very common, this lets us use these characters in other places; eg. allowing
+/// the user to enter a character by writing out the code point.
+pub const PRINTABLE_ASCII: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.!\"#$%&'()*+,-/:;<=>?@[\\]^_`{|}~";
 
 /// Convert an ink to a point cloud.
 ///
@@ -27,6 +29,8 @@ fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
     points
 }
 
+/// The format of the template file, used only for persistance. The cows allow us to save some
+/// copying when writing the file; see from_templates for the borrow.
 #[derive(Serialize, Deserialize)]
 pub struct TemplateFile<'a> {
     templates: BTreeMap<char, Vec<Cow<'a, str>>>,
@@ -39,8 +43,10 @@ impl<'a> TemplateFile<'a> {
             let strings: Vec<Cow<str>> = ts
                 .templates
                 .iter()
+                .filter(|t| !t.serialized.is_empty())
                 .map(|t| Cow::Borrowed(t.serialized.as_ref()))
                 .collect();
+
             if !strings.is_empty() {
                 entries.insert(ts.char, strings);
             }
@@ -81,18 +87,18 @@ pub struct Template {
 }
 
 impl Template {
-    fn from_ink(ink: Ink) -> Template {
+    pub fn from_ink(ink: Ink) -> Template {
         let serialized = ink.to_string();
         Template { ink, serialized }
     }
 
-    fn from_string(serialized: String) -> Template {
+    pub fn from_string(serialized: String) -> Template {
         let ink = Ink::from_string(&serialized);
         Template { ink, serialized }
     }
 }
 
-/// All the templates that correspond to a particular char, plus metadata.
+/// All the templates that correspond to a particular char, plus any metadata.
 pub struct CharTemplates {
     pub char: char,
     pub templates: Vec<Template>,

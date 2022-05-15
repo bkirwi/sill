@@ -71,6 +71,7 @@ version = "0.1.0"
 dependencies = [
  "armrest",
  "clap",
+ "itertools 0.10.3",
  "libremarkable",
  "once_cell",
  "rusttype 0.8.3",
