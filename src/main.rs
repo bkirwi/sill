@@ -2,9 +2,9 @@ use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
 
 use std::fs::File;
-use std::io;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::{env, io};
 
 use armrest::app;
 use armrest::app::{Applet, Component};
@@ -62,6 +62,7 @@ pub enum Msg {
     Write { row: usize, ink: Ink },
     Erase { row: usize, ink: Ink },
     Swipe { towards: Side },
+    Save,
     Open,
     Rename,
 }
@@ -228,6 +229,7 @@ struct Editor {
     // text editor stuff
     path: Option<PathBuf>, // None if we haven't chosen a name yet.
     row_offset: usize,
+    col_offset: usize,
     buffer: TextBuffer,
 }
 
@@ -256,6 +258,7 @@ impl Editor {
         view: &mut View<Msg>,
         rows: usize,
         row_offset: usize,
+        col_offset: usize,
         mut draw_label: impl FnMut(usize, View<Msg>),
         mut draw_cell: impl FnMut(usize, usize, View<Msg>),
     ) {
@@ -282,7 +285,7 @@ impl Editor {
                 });
             draw_label(row, margin_view);
             line_view.handlers().on_ink(|ink| Msg::Write { row, ink });
-            for col in 0..self.metrics.cols {
+            for col in (0..self.metrics.cols).map(|c| c + col_offset) {
                 let char_view = line_view.split_off(Side::Left, self.metrics.width);
                 draw_cell(row, col, char_view);
             }
@@ -330,29 +333,51 @@ impl Widget for Editor {
                 let path_text = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT)
                     .message(Msg::SwitchTab {
                         tab: Tab::Meta {
-                            path_buffer: TextBuffer::empty(),
+                            path_buffer: TextBuffer::from_string(
+                                self.path
+                                    .as_ref()
+                                    .map(|f| f.to_string_lossy())
+                                    .or(env::var("HOME").ok().map(Cow::Owned))
+                                    .unwrap_or(Cow::Borrowed("/"))
+                                    .borrow(),
+                            ),
                         },
                     })
                     .literal(&path_str)
                     .into_text();
-                button("template", Tab::Template).render_split(&mut header, Side::Right, 0.5);
+                button("template", Msg::SwitchTab { tab: Tab::Template }).render_split(
+                    &mut header,
+                    Side::Right,
+                    0.5,
+                );
+                button("save", Msg::Save).render_split(&mut header, Side::Right, 0.5);
                 path_text.render_placed(header, 0.0, 0.5);
             }
             Tab::Template => {
-                button("edit", Tab::Edit).render_split(&mut header, Side::Right, 0.5);
+                button("edit", Msg::SwitchTab { tab: Tab::Edit }).render_split(
+                    &mut header,
+                    Side::Right,
+                    0.5,
+                );
                 header.leave_rest_blank();
             }
         }
 
-        view.handlers().on_swipe(
-            Side::Bottom,
-            Msg::Swipe {
-                towards: Side::Bottom,
-            },
-        );
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            view.handlers()
+                .pad(-100)
+                .on_swipe(side, Msg::Swipe { towards: side });
+        }
 
-        view.handlers()
-            .on_swipe(Side::Top, Msg::Swipe { towards: Side::Top });
+        let line_end = EditChar {
+            value: '\n',
+            rendered: Some(text_literal(self.metrics.height, "⏎").with_weight(0.5)),
+        };
+
+        let file_end = EditChar {
+            value: '\0',
+            rendered: Some(text_literal(self.metrics.height, "⌧").with_weight(0.5)),
+        };
 
         match &self.tab {
             Tab::Meta { path_buffer } => {
@@ -360,11 +385,19 @@ impl Widget for Editor {
                     &mut view,
                     1,
                     0,
+                    0,
                     |_n, _v| {},
                     |row, col, char_view| {
                         let line = path_buffer.contents.get(row);
                         let ch = line.and_then(|l| match col.cmp(&l.len()) {
                             Ordering::Less => l.get(col),
+                            Ordering::Equal => {
+                                if row + 1 < path_buffer.contents.len() {
+                                    Some(&line_end)
+                                } else {
+                                    Some(&file_end)
+                                }
+                            }
                             _ => None,
                         });
                         let grid = GridCell {
@@ -374,34 +407,37 @@ impl Widget for Editor {
                         char_view.draw(&grid);
                     },
                 );
-                button("back", Tab::Edit).render_split(&mut view, Side::Left, 0.0);
-                Text::builder(self.metrics.height, &*FONT)
-                    .message(Msg::Open)
-                    .literal("open")
-                    .into_text()
-                    .render_split(&mut view, Side::Left, 0.0);
-                Text::builder(self.metrics.height, &*FONT)
-                    .message(Msg::Rename)
-                    .literal("rename as")
-                    .into_text()
-                    .render_split(&mut view, Side::Left, 0.0);
+                let mut buttons = view.split_off(Side::Top, TOP_MARGIN);
+                buttons.split_off(Side::Left, self.metrics.left_margin);
+                buttons.split_off(Side::Right, self.metrics.right_margin);
+                for button in [
+                    button("back", Msg::SwitchTab { tab: Tab::Edit }),
+                    button("open", Msg::Open),
+                    button("rename", Msg::Rename),
+                ]
+                .into_iter()
+                .rev()
+                {
+                    button.render_split(&mut buttons, Side::Right, 0.5)
+                }
             }
             Tab::Edit => {
-                let line_end = EditChar {
-                    value: '\n',
-                    rendered: Some(text_literal(self.metrics.height, "⏎").with_weight(0.5)),
-                };
                 self.draw_grid(
                     &mut view,
                     self.metrics.rows,
                     self.row_offset,
+                    self.col_offset,
                     |_n, _v| {},
                     |row, col, char_view| {
                         let line = self.buffer.contents.get(row);
                         let ch = line.and_then(|l| match col.cmp(&l.len()) {
                             Ordering::Less => l.get(col),
-                            Ordering::Equal if row + 1 < self.buffer.contents.len() => {
-                                Some(&line_end)
+                            Ordering::Equal => {
+                                if row + 1 < self.buffer.contents.len() {
+                                    Some(&line_end)
+                                } else {
+                                    Some(&file_end)
+                                }
                             }
                             _ => None,
                         });
@@ -415,11 +451,7 @@ impl Widget for Editor {
                 let text = Text::literal(
                     DEFAULT_CHAR_HEIGHT,
                     &*FONT,
-                    &format!(
-                        "Lines {}-{}",
-                        self.row_offset,
-                        self.row_offset + self.metrics.rows
-                    ),
+                    &format!("{}:{}", self.row_offset, self.col_offset),
                 );
                 text.render_placed(view, 0.5, 0.5);
             }
@@ -428,6 +460,7 @@ impl Widget for Editor {
                     &mut view,
                     self.metrics.rows,
                     self.template_offset,
+                    0,
                     |row, label_view| {
                         if let Some(templates) = self.templates.get(row) {
                             let char_text = Text::literal(
@@ -523,7 +556,7 @@ impl Applet for Editor {
 
     fn update(&mut self, message: Self::Message) -> Option<Self::Upstream> {
         match message {
-            Msg::Write { row, ink } => {
+            Msg::Write { row, mut ink } => {
                 let ink_type = InkType::classify(&self.metrics, &ink);
                 match &mut self.tab {
                     Tab::Meta { path_buffer } => {
@@ -567,13 +600,17 @@ impl Applet for Editor {
                                 }
                             }
                             InkType::Strikethrough { start, end } => {
-                                self.buffer.remove((row, start), (row, end));
+                                self.buffer.remove(
+                                    (row, start + self.col_offset),
+                                    (row, end + self.col_offset),
+                                );
                                 return None;
                             }
                             InkType::Junk => {
                                 return None;
                             }
                         };
+                        let col = col + self.col_offset;
 
                         self.buffer.pad(row, col);
 
@@ -641,7 +678,12 @@ impl Applet for Editor {
                     Side::Bottom => {
                         self.row_offset -= (self.metrics.rows - 1).min(self.row_offset);
                     }
-                    _ => {}
+                    Side::Left => {
+                        self.col_offset += self.metrics.cols - 1;
+                    }
+                    Side::Right => {
+                        self.col_offset -= (self.metrics.cols - 1).min(self.col_offset);
+                    }
                 },
                 Tab::Template => match towards {
                     Side::Top => {
@@ -674,15 +716,21 @@ impl Applet for Editor {
                     self.tab = Tab::Edit;
                 }
             }
+            Msg::Save => {
+                if let Some(path) = &self.path {
+                    std::fs::write(path, self.buffer.content_string());
+                }
+            }
         }
 
         None
     }
 }
 
-fn button(text: &str, tab: Tab) -> Text<Msg> {
+fn button(text: &str, msg: Msg) -> Text<Msg> {
     Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT)
-        .message(Msg::SwitchTab { tab })
+        .literal("    ")
+        .message(msg)
         .literal(text)
         .into_text()
 }
@@ -712,11 +760,12 @@ fn main() {
         path: None,
         template_path,
         metrics,
-        tab: Tab::Template,
+        tab: Tab::Edit,
         template_offset: 0,
         templates: vec![],
         char_recognizer,
         row_offset: 0,
+        col_offset: 0,
         buffer: TextBuffer::from_string(&file_string),
     };
 
