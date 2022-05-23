@@ -38,6 +38,7 @@ impl Fragment for Border {
 pub struct GridCell {
     pub baseline: i32,
     pub char: Option<TextFragment>,
+    pub insert_area: bool,
 }
 
 impl Fragment for GridCell {
@@ -54,6 +55,10 @@ impl Fragment for GridCell {
             canvas.write(x, mid_line, color::GRAY(40));
             canvas.write(x, bottom_line, color::GRAY(40));
             canvas.write(x, self.baseline, color::GRAY(120));
+            if self.insert_area {
+                canvas.write(x, self.baseline + 1, color::GRAY(120));
+                canvas.write(x, self.baseline + 2, color::GRAY(120));
+            }
         }
         if let Some(c) = &self.char {
             c.draw(canvas);
