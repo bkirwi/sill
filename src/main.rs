@@ -1,6 +1,7 @@
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
 
+use std::collections::VecDeque;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::ErrorKind;
@@ -24,9 +25,11 @@ use xdg::BaseDirectories;
 
 use grid_ui::*;
 use hwr::*;
+use text_buffer::TextBuffer;
 
 mod grid_ui;
 mod hwr;
+mod text_buffer;
 
 static FONT: Lazy<Font<'static>> = Lazy::new(|| {
     let font_bytes: &[u8] = include_bytes!("../fonts/Inconsolata-Regular.ttf");
@@ -118,91 +121,6 @@ pub enum Tab {
     Template,
 }
 
-#[derive(Clone)]
-pub struct TextBuffer {
-    contents: Vec<Vec<char>>,
-}
-
-impl TextBuffer {
-    pub fn empty() -> TextBuffer {
-        TextBuffer {
-            contents: vec![vec![]],
-        }
-    }
-
-    pub fn from_string(str: &str) -> TextBuffer {
-        let contents = str.lines().map(|line| line.chars().collect()).collect();
-        TextBuffer { contents }
-    }
-
-    /// Clamp a pair of coordinates to the nearest valid pair.
-    /// (row, col) is valid if `contents[row][col..col]` wouldn't panic.
-    pub fn clamp(&self, coords: (usize, usize)) -> (usize, usize) {
-        let (row, col) = coords;
-        let rows = self.contents.len();
-        match (row + 1).cmp(&rows) {
-            Ordering::Less => {
-                let cols = self.contents[row].len();
-                if col > cols {
-                    (row + 1, 0)
-                } else {
-                    (row, col)
-                }
-            }
-            Ordering::Equal => (row, self.contents[row].len().min(col)),
-            Ordering::Greater => {
-                let row = rows - 1;
-                (row, self.contents[row].len())
-            }
-        }
-    }
-
-    /// Add rows and columns as necessary such that `contents[row][col..col]` is valid.
-    pub fn pad(&mut self, row: usize, col: usize) {
-        if self.contents.len() <= row {
-            self.contents.resize(row + 1, vec![]);
-        }
-        let row = &mut self.contents[row];
-        if row.len() < col {
-            row.resize(col, ' ');
-        }
-    }
-
-    pub fn write(&mut self, (row, col): (usize, usize), c: char) {
-        self.pad(row, col + 1);
-        self.contents[row][col] = c;
-    }
-
-    /// Remove all the contents between the two provided coordinates.
-    pub fn remove(&mut self, from: (usize, usize), to: (usize, usize)) {
-        assert!(from < to, "start must be less than end");
-        let (from_row, from_col) = self.clamp(from);
-        let (to_row, to_col) = self.clamp(to);
-        if from_row == to_row {
-            self.contents[from_row].drain(from_col..to_col);
-        } else {
-            self.contents[from_row].truncate(from_col);
-            let trailer = self
-                .contents
-                .drain((from_row + 1)..=to_row)
-                .last()
-                .expect("removing at least one row");
-            self.contents[from_row].extend(trailer.into_iter().skip(to_col))
-        }
-    }
-
-    pub fn content_string(&self) -> String {
-        let mut result = String::new();
-        for (i, line) in self.contents.iter().enumerate() {
-            if i != 0 {
-                result.push('\n');
-            }
-            result.extend(line);
-        }
-        result
-    }
-}
-
 type Coord = (usize, usize);
 
 struct TextWindow {
@@ -276,6 +194,16 @@ impl TextWindow {
     }
 }
 
+/// This stores data from a recent recognition attempt, and the number of times it was overwritten
+/// within the window we maintain. Idea being, if we have to go back and rewrite a char just after
+/// we wrote it, we probably guessed wrong and should use it as a template.
+struct Recognition {
+    coord: Coord,
+    ink: Ink,
+    best_char: char,
+    overwrites: usize,
+}
+
 struct Editor {
     metrics: Metrics,
 
@@ -284,11 +212,13 @@ struct Editor {
     // tabs
     tab: Tab,
 
-    // template stuff stuff
+    // template stuff
     template_path: PathBuf,
     template_offset: usize,
     templates: Vec<CharTemplates>,
     char_recognizer: CharRecognizer,
+
+    tentative_recognitions: VecDeque<Recognition>,
 
     // text editor stuff
     path: Option<PathBuf>, // None if we haven't chosen a name yet.
@@ -377,6 +307,37 @@ impl Editor {
             Err(e) => {
                 self.error_string = format!("Error: {}", e);
                 None
+            }
+        }
+    }
+
+    pub fn record_recognition(&mut self, coord: Coord, ink: Ink, best_char: char) {
+        for r in &mut self.tentative_recognitions {
+            // Assume we got it wrong the first time!
+            if r.coord == coord {
+                r.best_char = best_char;
+                r.overwrites += 1;
+            }
+        }
+
+        self.tentative_recognitions.push_back(Recognition {
+            coord,
+            ink,
+            best_char,
+            overwrites: 0,
+        });
+
+        while self.tentative_recognitions.len() > NUM_RECENT_RECOGNITIONS {
+            if let Some(r) = self.tentative_recognitions.pop_front() {
+                if r.overwrites > 0 {
+                    if let Some(t) = self.templates.iter_mut().find(|c| c.char == r.best_char) {
+                        t.templates.push(Template::from_ink(r.ink));
+                        self.error_string = format!(
+                            "NB: saved template for char '{}' at coordinates {:?}",
+                            r.best_char, r.coord
+                        );
+                    }
+                }
             }
         }
     }
@@ -675,8 +636,9 @@ impl InkType {
         for (stroke, col) in ink.strokes().zip(indices) {
             // Find the midpoint, bucket, and translate to an index.
             let mut ink = &mut inks[col - min_col];
+            let x_offset = col as f32 * metrics.width as f32;
             for p in stroke {
-                ink.push(p.x, p.y, p.z);
+                ink.push(p.x - x_offset, p.y, p.z);
             }
             ink.pen_up();
         }
@@ -741,18 +703,21 @@ impl Applet for Editor {
                         match ink_type {
                             InkType::Scratch { col } => {
                                 self.text.write((row, col), ' ');
+                                self.tentative_recognitions.clear();
                             }
                             InkType::Glyphs { mut col, parts } => {
                                 for ink in parts {
                                     if let Some(c) = self.char_recognizer.best_match(&ink, f32::MAX)
                                     {
                                         self.text.write((row, col), c);
+                                        self.record_recognition((row, col), ink, c);
                                     }
                                     col += 1;
                                 }
                             }
                             InkType::Strikethrough { start, end } => {
                                 self.text.buffer.remove((row, start), (row, end));
+                                self.tentative_recognitions.clear();
                             }
                             InkType::Carat { col } => {
                                 if self.text.insert.is_none() {
@@ -760,6 +725,7 @@ impl Applet for Editor {
                                 } else {
                                     self.text.close_insert((row, col));
                                 };
+                                self.tentative_recognitions.clear();
                             }
                             InkType::Junk => {}
                         };
@@ -854,6 +820,7 @@ impl Applet for Editor {
                     self.path = Some(path);
                     self.tab = Tab::Edit;
                     self.dirty = false;
+                    self.tentative_recognitions.clear();
                 }
             }
             Msg::Rename => {
@@ -891,6 +858,8 @@ fn button(text: &str, msg: Msg, active: bool) -> Text<Msg> {
     };
     builder.literal(text).into_text()
 }
+
+const NUM_RECENT_RECOGNITIONS: usize = 16;
 
 fn main() {
     let mut app = app::App::new();
@@ -930,6 +899,7 @@ fn main() {
             origin: (0, 0),
         },
         dirty: false,
+        tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
     };
 
     let load_result = widget.load_templates();
