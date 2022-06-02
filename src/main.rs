@@ -70,6 +70,7 @@ pub enum Msg {
     Save,
     Open { path: PathBuf },
     Rename,
+    New,
 }
 
 #[derive(Hash, Clone)]
@@ -130,6 +131,14 @@ struct TextWindow {
 }
 
 impl TextWindow {
+    fn new(buffer: TextBuffer) -> TextWindow {
+        TextWindow {
+            buffer,
+            insert: None,
+            origin: (0, 0),
+        }
+    }
+
     fn insert_coords(&self, (row, col): Coord) -> Option<Coord> {
         self.insert
             .as_ref()
@@ -311,6 +320,13 @@ impl Editor {
         }
     }
 
+    /// Our character recognizer is extremely fallible. To help improve it, we
+    /// track the last few recognitions in a buffer. If we have to overwrite a
+    /// recent recognition within the buffer window, we assume that the old ink
+    /// should actually have been recognized as the new character. This helps
+    /// bootstrap the template database; though it's still necessary to go look
+    /// at the templates every once in a while and prune useless or incorrect
+    /// ones.
     pub fn record_recognition(&mut self, coord: Coord, ink: Ink, best_char: char) {
         for r in &mut self.tentative_recognitions {
             // Assume we got it wrong the first time!
@@ -392,7 +408,11 @@ impl Widget for Editor {
                     .path
                     .as_ref()
                     .map(|f| f.to_string_lossy())
-                    .or(env::var("HOME").ok().map(Cow::Owned))
+                    .or(env::var("HOME").ok().map(|mut s| {
+                        // HOME often doesn't have a trailing slash, but multiples are OK.
+                        s.push('/');
+                        Cow::Owned(s)
+                    }))
                     .unwrap_or(Cow::Borrowed("/"));
                 let path_text = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT)
                     .message(Msg::SwitchTab {
@@ -460,6 +480,8 @@ impl Widget for Editor {
                 for button in [
                     button("back", Msg::SwitchTab { tab: Tab::Edit }, true),
                     button("rename", Msg::Rename, true),
+                    // TODO: disable if exists?
+                    button("create", Msg::New, true),
                 ]
                 .into_iter()
                 .rev()
@@ -649,14 +671,17 @@ impl InkType {
     }
 }
 
+const NUM_SUGGESTIONS: usize = 16;
+
 fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
     if let Some((dir, file)) = current_path.rsplit_once('/') {
+        let dir = if dir.is_empty() { "/" } else { dir };
         let read = fs::read_dir(dir)?;
         let results = read
             .filter_map(|r| r.ok())
             .filter(|de| de.file_name().to_string_lossy().starts_with(file))
             .map(|de| de.path())
-            .take(10)
+            .take(NUM_SUGGESTIONS)
             .collect();
         Ok(results)
     } else {
@@ -702,10 +727,12 @@ impl Applet for Editor {
                         self.dirty = true;
                         match ink_type {
                             InkType::Scratch { col } => {
+                                let col = self.col_offset + col;
                                 self.text.write((row, col), ' ');
                                 self.tentative_recognitions.clear();
                             }
-                            InkType::Glyphs { mut col, parts } => {
+                            InkType::Glyphs { col, parts } => {
+                                let mut col = self.col_offset + col;
                                 for ink in parts {
                                     if let Some(c) = self.char_recognizer.best_match(&ink, f32::MAX)
                                     {
@@ -716,10 +743,13 @@ impl Applet for Editor {
                                 }
                             }
                             InkType::Strikethrough { start, end } => {
+                                let start = self.col_offset + start;
+                                let end = self.col_offset + end;
                                 self.text.buffer.remove((row, start), (row, end));
                                 self.tentative_recognitions.clear();
                             }
                             InkType::Carat { col } => {
+                                let col = self.col_offset + col;
                                 if self.text.insert.is_none() {
                                     self.text.open_insert((row, col));
                                 } else {
@@ -755,13 +785,7 @@ impl Applet for Editor {
                                     );
                                     for ink in parts {
                                         let mut prev = &mut char_data.templates[col];
-                                        prev.ink.append(
-                                            ink.translate(-Vector2::new(
-                                                col as f32 * self.metrics.width as f32,
-                                                0.0,
-                                            )),
-                                            0.5,
-                                        );
+                                        prev.ink.append(ink, 0.5);
                                         // TODO: put this off?
                                         prev.serialized = prev.ink.to_string();
                                         col += 1;
@@ -834,6 +858,18 @@ impl Applet for Editor {
                     self.tab = Tab::Edit;
                 }
             }
+            Msg::New => {
+                if let Tab::Meta { path_buffer, .. } = &mut self.tab {
+                    let path_string = path_buffer.content_string();
+                    let path_buf = PathBuf::from(path_string);
+                    if self.path.as_ref() != Some(&path_buf) {
+                        self.path = Some(path_buf);
+                        self.dirty = true;
+                    }
+                    self.tab = Tab::Edit;
+                }
+                self.text = TextWindow::new(TextBuffer::empty());
+            }
             Msg::Save => {
                 if let Some(path) = &self.path {
                     let write_result = std::fs::write(path, self.text.buffer.content_string());
@@ -893,11 +929,7 @@ fn main() {
         char_recognizer,
         row_offset: 0,
         col_offset: 0,
-        text: TextWindow {
-            buffer: TextBuffer::from_string(&file_string),
-            insert: None,
-            origin: (0, 0),
-        },
+        text: TextWindow::new(TextBuffer::from_string(&file_string)),
         dirty: false,
         tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
     };
