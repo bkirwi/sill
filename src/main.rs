@@ -231,8 +231,6 @@ struct Editor {
 
     // text editor stuff
     path: Option<PathBuf>, // None if we haven't chosen a name yet.
-    row_offset: usize,
-    col_offset: usize,
     text: TextWindow,
     dirty: bool,
 }
@@ -505,8 +503,8 @@ impl Widget for Editor {
                 self.draw_grid(
                     &mut view,
                     self.metrics.rows,
-                    self.row_offset,
-                    self.col_offset,
+                    self.text.origin.0,
+                    self.text.origin.1,
                     |_n, _v| {},
                     |row, col, char_view| {
                         let ch = self.text.fragment((row, col), &self.metrics);
@@ -524,7 +522,7 @@ impl Widget for Editor {
                     &*FONT,
                     &format!(
                         "{}:{} [{}]",
-                        self.row_offset, self.col_offset, self.error_string
+                        self.text.origin.0, self.text.origin.1, self.error_string
                     ),
                 );
                 text.render_placed(view, 0.5, 0.5);
@@ -727,12 +725,12 @@ impl Applet for Editor {
                         self.dirty = true;
                         match ink_type {
                             InkType::Scratch { col } => {
-                                let col = self.col_offset + col;
+                                let col = self.text.origin.1 + col;
                                 self.text.write((row, col), ' ');
                                 self.tentative_recognitions.clear();
                             }
                             InkType::Glyphs { col, parts } => {
-                                let mut col = self.col_offset + col;
+                                let mut col = self.text.origin.1 + col;
                                 for ink in parts {
                                     if let Some(c) = self.char_recognizer.best_match(&ink, f32::MAX)
                                     {
@@ -743,13 +741,13 @@ impl Applet for Editor {
                                 }
                             }
                             InkType::Strikethrough { start, end } => {
-                                let start = self.col_offset + start;
-                                let end = self.col_offset + end;
+                                let start = self.text.origin.1 + start;
+                                let end = self.text.origin.1 + end;
                                 self.text.buffer.remove((row, start), (row, end));
                                 self.tentative_recognitions.clear();
                             }
                             InkType::Carat { col } => {
-                                let col = self.col_offset + col;
+                                let col = self.text.origin.1 + col;
                                 if self.text.insert.is_none() {
                                     self.text.open_insert((row, col));
                                 } else {
@@ -809,16 +807,16 @@ impl Applet for Editor {
                 // TODO: abstract over the pattern here.
                 Tab::Edit => match towards {
                     Side::Top => {
-                        self.row_offset += self.metrics.rows - 1;
+                        self.text.origin.0 += self.metrics.rows - 1;
                     }
                     Side::Bottom => {
-                        self.row_offset -= (self.metrics.rows - 1).min(self.row_offset);
+                        self.text.origin.0 -= (self.metrics.rows - 1).min(self.text.origin.0);
                     }
                     Side::Left => {
-                        self.col_offset += self.metrics.cols - 1;
+                        self.text.origin.1 += self.metrics.cols - 1;
                     }
                     Side::Right => {
-                        self.col_offset -= (self.metrics.cols - 1).min(self.col_offset);
+                        self.text.origin.1 -= (self.metrics.cols - 1).min(self.text.origin.1);
                     }
                 },
                 Tab::Template => match towards {
@@ -927,8 +925,6 @@ fn main() {
         template_offset: 0,
         templates: vec![],
         char_recognizer,
-        row_offset: 0,
-        col_offset: 0,
         text: TextWindow::new(TextBuffer::from_string(&file_string)),
         dirty: false,
         tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
