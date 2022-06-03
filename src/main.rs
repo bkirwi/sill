@@ -679,19 +679,24 @@ impl InkType {
 const NUM_SUGGESTIONS: usize = 16;
 
 fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
-    if let Some((dir, file)) = current_path.rsplit_once('/') {
-        let dir = if dir.is_empty() { "/" } else { dir };
-        let read = fs::read_dir(dir)?;
-        let results = read
-            .filter_map(|r| r.ok())
-            .filter(|de| de.file_name().to_string_lossy().starts_with(file))
-            .map(|de| de.path())
-            .take(NUM_SUGGESTIONS)
-            .collect();
-        Ok(results)
-    } else {
-        Ok(vec![])
+    if !current_path.starts_with('/') {
+        // All paths must be absolute.
+        return Ok(vec![]);
     }
+    let (dir, file) = current_path.rsplit_once('/').expect("splitting /path by /");
+    let dir = if dir.is_empty() { "/" } else { dir };
+    let read = fs::read_dir(dir)?;
+    let results = read
+        .filter_map(|r| r.ok())
+        .filter_map(|de| {
+            de.file_name()
+                .to_str()
+                .filter(|s| s.starts_with(file))
+                .map(|_| de.path())
+        })
+        .take(NUM_SUGGESTIONS)
+        .collect();
+    Ok(results)
 }
 
 impl Editor {
