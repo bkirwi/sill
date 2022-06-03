@@ -1,11 +1,11 @@
-use std::borrow::{Borrow, Cow};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use std::collections::VecDeque;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::ErrorKind;
-use std::ops::Rem;
+
 use std::path::PathBuf;
 use std::{env, fs, io};
 
@@ -19,7 +19,7 @@ use clap::Arg;
 use libremarkable::framebuffer::cgmath::Vector2;
 use libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
 use once_cell::sync::Lazy;
-use rusttype::{Font, Scale};
+use rusttype::Scale;
 
 use xdg::BaseDirectories;
 
@@ -128,7 +128,7 @@ impl TextWindow {
     fn insert_coords(&self, (row, col): Coord) -> Option<Coord> {
         self.insert
             .as_ref()
-            .and_then(|((r, c), _)| match row.cmp(&r) {
+            .and_then(|((r, c), _)| match row.cmp(r) {
                 Ordering::Less => None,
                 Ordering::Equal => {
                     if col < *c {
@@ -410,7 +410,7 @@ impl Widget for Editor {
                     .message(Msg::SwitchTab {
                         tab: Tab::Meta {
                             path_buffer: TextBuffer::from_string(&path),
-                            suggested: suggestions(&path).unwrap_or(vec![]),
+                            suggested: suggestions(&path).unwrap_or_default(),
                         },
                     })
                     .literal(&path_str)
@@ -615,7 +615,7 @@ impl InkType {
             }
         }
 
-        let center = ((min_x + max_x) / 2.0);
+        let center = (min_x + max_x) / 2.0;
 
         // Detect the carat!
         // Vertical, and very close to a cell boundary.
@@ -656,7 +656,7 @@ impl InkType {
         let mut inks = vec![Ink::new(); (max_col - min_col) + 1];
         for (stroke, col) in ink.strokes().zip(indices) {
             // Find the midpoint, bucket, and translate to an index.
-            let mut ink = &mut inks[col - min_col];
+            let ink = &mut inks[col - min_col];
             let x_offset = col as f32 * metrics.width as f32;
             for p in stroke {
                 ink.push(p.x - x_offset, p.y, p.z);
@@ -707,7 +707,7 @@ impl Applet for Editor {
 
     fn update(&mut self, message: Self::Message) -> Option<Self::Upstream> {
         match message {
-            Msg::Write { row, mut ink } => {
+            Msg::Write { row, ink } => {
                 let ink_type = InkType::classify(&self.metrics, ink);
                 match &mut self.tab {
                     Tab::Meta {
@@ -734,7 +734,7 @@ impl Applet for Editor {
                             InkType::Carat { .. } => {}
                         }
 
-                        *suggested = suggestions(&path_buffer.content_string()).unwrap_or(vec![]);
+                        *suggested = suggestions(&path_buffer.content_string()).unwrap_or_default();
                     }
                     Tab::Edit => {
                         self.dirty = true;
