@@ -125,6 +125,12 @@ impl TextWindow {
         }
     }
 
+    fn page_relative(&mut self, (row_d, col_d): (isize, isize)) {
+        let (row, col) = &mut self.origin;
+        *row = (*row as isize + row_d * self.dimensions.0 as isize).max(0) as usize;
+        *col = (*col as isize + col_d * self.dimensions.1 as isize).max(0) as usize;
+    }
+
     fn insert_coords(&self, (row, col): Coord) -> Option<Coord> {
         self.insert
             .as_ref()
@@ -820,20 +826,15 @@ impl Applet for Editor {
             Msg::Erase { .. } => {}
             Msg::Swipe { towards } => match self.tab {
                 // TODO: abstract over the pattern here.
-                Tab::Edit => match towards {
-                    Side::Top => {
-                        self.text.origin.0 += self.metrics.rows - 1;
-                    }
-                    Side::Bottom => {
-                        self.text.origin.0 -= (self.metrics.rows - 1).min(self.text.origin.0);
-                    }
-                    Side::Left => {
-                        self.text.origin.1 += self.metrics.cols - 1;
-                    }
-                    Side::Right => {
-                        self.text.origin.1 -= (self.metrics.cols - 1).min(self.text.origin.1);
-                    }
-                },
+                Tab::Edit => {
+                    let movement = match towards {
+                        Side::Top => (1, 0),
+                        Side::Bottom => (-1, 0),
+                        Side::Left => (0, 1),
+                        Side::Right => (0, -1),
+                    };
+                    self.text.page_relative(movement);
+                }
                 Tab::Template => match towards {
                     Side::Top => {
                         self.template_offset += self.metrics.rows - 1;
