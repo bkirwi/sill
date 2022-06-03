@@ -23,26 +23,15 @@ use rusttype::{Font, Scale};
 
 use xdg::BaseDirectories;
 
+use font::*;
 use grid_ui::*;
 use hwr::*;
-use text_buffer::TextBuffer;
+use text_buffer::*;
 
+mod font;
 mod grid_ui;
 mod hwr;
 mod text_buffer;
-
-static FONT: Lazy<Font<'static>> = Lazy::new(|| {
-    let font_bytes: &[u8] = include_bytes!("../fonts/Inconsolata-Regular.ttf");
-    Font::from_bytes(font_bytes).unwrap()
-});
-
-fn text_literal(height: i32, text: &str) -> TextFragment {
-    // NB: Inconsolata has zero line gap.
-    Text::builder(height, &*FONT)
-        .literal(text)
-        .into_text()
-        .to_fragment()
-}
 
 static BASE_DIRS: Lazy<BaseDirectories> =
     Lazy::new(|| BaseDirectories::with_prefix("armrest-editor").unwrap());
@@ -51,8 +40,6 @@ const SCREEN_HEIGHT: i32 = DISPLAYHEIGHT as i32;
 const SCREEN_WIDTH: i32 = DISPLAYWIDTH as i32;
 const TOP_MARGIN: i32 = 100;
 const LEFT_MARGIN: i32 = 100;
-
-const DEFAULT_CHAR_HEIGHT: i32 = 40;
 
 const TEMPLATE_FILE: &str = "templates.json";
 
@@ -79,6 +66,7 @@ struct EditChar {
     rendered: Option<TextFragment>,
 }
 
+// TODO: split out the margin widths.
 #[derive(Hash, Clone)]
 pub struct Metrics {
     height: i32,
@@ -86,8 +74,6 @@ pub struct Metrics {
     baseline: i32,
     rows: usize,
     cols: usize,
-    left_margin: i32,
-    right_margin: i32,
 }
 
 impl Metrics {
@@ -106,8 +92,6 @@ impl Metrics {
             baseline: v_metrics.ascent as i32 + 1,
             rows: rows as usize,
             cols: cols as usize,
-            left_margin: LEFT_MARGIN,
-            right_margin: SCREEN_WIDTH - LEFT_MARGIN - cols * width,
         }
     }
 }
@@ -127,14 +111,16 @@ type Coord = (usize, usize);
 struct TextWindow {
     buffer: TextBuffer,
     insert: Option<(Coord, TextBuffer)>,
+    dimensions: Coord,
     origin: Coord,
 }
 
 impl TextWindow {
-    fn new(buffer: TextBuffer) -> TextWindow {
+    fn new(buffer: TextBuffer, dimensions: Coord) -> TextWindow {
         TextWindow {
             buffer,
             insert: None,
+            dimensions,
             origin: (0, 0),
         }
     }
@@ -255,6 +241,14 @@ impl Editor {
         Ok(())
     }
 
+    fn left_margin(&self) -> i32 {
+        LEFT_MARGIN
+    }
+
+    fn right_margin(&self) -> i32 {
+        SCREEN_WIDTH - LEFT_MARGIN - self.metrics.cols as i32 * self.metrics.width
+    }
+
     fn draw_grid(
         &self,
         view: &mut View<Msg>,
@@ -270,8 +264,8 @@ impl Editor {
             side: Side::Bottom,
             width: MARGIN_BORDER,
             color: 100,
-            start_offset: self.metrics.left_margin - LEFT_MARGIN_BORDER,
-            end_offset: self.metrics.right_margin - MARGIN_BORDER,
+            start_offset: self.left_margin() - LEFT_MARGIN_BORDER,
+            end_offset: self.right_margin() - MARGIN_BORDER,
         });
         for row in row_offset..(row_offset + rows) {
             let mut line_view = view.split_off(Side::Top, self.metrics.height);
@@ -303,8 +297,8 @@ impl Editor {
             side: Side::Top,
             width: MARGIN_BORDER,
             color: 100,
-            start_offset: self.metrics.left_margin - LEFT_MARGIN_BORDER,
-            end_offset: self.metrics.right_margin - MARGIN_BORDER,
+            start_offset: self.left_margin() - LEFT_MARGIN_BORDER,
+            end_offset: self.right_margin() - MARGIN_BORDER,
         });
     }
 
@@ -366,14 +360,14 @@ fn fragment_at(
     line.and_then(|l| match col.cmp(&l.len()) {
         Ordering::Less => l
             .get(col)
-            .map(|c| text_literal(metrics.height, &c.to_string()).with_weight(TEXT_WEIGHT)),
+            .map(|c| font::text_literal(metrics.height, &c.to_string()).with_weight(TEXT_WEIGHT)),
         Ordering::Equal => {
             let end_char = if row + 1 < buffer.contents.len() {
                 "⏎"
             } else {
                 "⌧"
             };
-            Some(text_literal(metrics.height, end_char).with_weight(0.5))
+            Some(font::text_literal(metrics.height, end_char).with_weight(0.5))
         }
         _ => None,
     })
@@ -389,7 +383,7 @@ impl Widget for Editor {
     fn render(&self, mut view: View<Msg>) {
         let mut header = view.split_off(Side::Top, TOP_MARGIN);
         header.split_off(Side::Left, LEFT_MARGIN);
-        header.split_off(Side::Right, self.metrics.right_margin);
+        header.split_off(Side::Right, self.right_margin());
 
         match self.tab {
             Tab::Meta { .. } => {
@@ -471,8 +465,8 @@ impl Widget for Editor {
                     },
                 );
 
-                view.split_off(Side::Left, self.metrics.left_margin);
-                view.split_off(Side::Right, self.metrics.right_margin);
+                view.split_off(Side::Left, self.left_margin());
+                view.split_off(Side::Right, self.right_margin());
                 let mut buttons = view.split_off(Side::Top, TOP_MARGIN);
 
                 for button in [
@@ -496,7 +490,10 @@ impl Widget for Editor {
                         Side::Right,
                         0.5,
                     );
-                    suggest_view.draw(&text_literal(self.metrics.height, &s.to_string_lossy()));
+                    suggest_view.draw(&font::text_literal(
+                        self.metrics.height,
+                        &s.to_string_lossy(),
+                    ));
                 }
             }
             Tab::Edit => {
@@ -549,7 +546,7 @@ impl Widget for Editor {
                             baseline: self.metrics.baseline,
                             // char: None,
                             char: maybe_char.map(|char_data| {
-                                text_literal(self.metrics.height, &char_data.char.to_string())
+                                font::text_literal(self.metrics.height, &char_data.char.to_string())
                                     .with_weight(0.2)
                             }),
                             insert_area: false,
@@ -612,11 +609,27 @@ impl InkType {
                     end: max_x.round().max(0.0) as usize,
                 };
             } else {
+                // TODO: could just be a single char!
+                // Maybe fall through and handle this case as part of char splitting?
                 return InkType::Junk;
             }
         }
 
         let center = ((min_x + max_x) / 2.0);
+
+        // Detect the carat!
+        // Vertical, and very close to a cell boundary.
+        if min_y < 0.1
+            && max_y > 0.9
+            && (max_x - min_x) < 0.3
+            && (center - center.round()).abs() < 0.3
+            && center.round() >= 0.0
+        {
+            return InkType::Carat {
+                col: center.round() as usize,
+            };
+        }
+
         if center < 0.0 {
             // Out of bounds!
             return InkType::Junk;
@@ -625,18 +638,6 @@ impl InkType {
         if is_erase(&ink) {
             let col = center as usize;
             return InkType::Scratch { col };
-        }
-
-        // Detect the carat!
-        // Vertical, and very close to a cell boundary.
-        if min_y < 0.1
-            && max_y > 0.9
-            && (max_x - min_x) < 0.3
-            && (center - center.round()).abs() < 0.3
-        {
-            return InkType::Carat {
-                col: center.round() as usize,
-            };
         }
 
         // Try and partition into multiple glyphs.
@@ -684,6 +685,20 @@ fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
         Ok(results)
     } else {
         Ok(vec![])
+    }
+}
+
+impl Editor {
+    fn update_path_from_meta(&mut self) {
+        if let Tab::Meta { path_buffer, .. } = &mut self.tab {
+            let path_string = path_buffer.content_string();
+            let path_buf = PathBuf::from(path_string);
+            if self.path.as_ref() != Some(&path_buf) {
+                self.path = Some(path_buf);
+                self.dirty = true;
+            }
+            self.tab = Tab::Edit;
+        }
     }
 }
 
@@ -834,11 +849,10 @@ impl Applet for Editor {
             },
             Msg::Open { path } => {
                 if let Some(file_contents) = self.report_error(fs::read_to_string(&path)) {
-                    self.text = TextWindow {
-                        buffer: TextBuffer::from_string(&file_contents),
-                        insert: None,
-                        origin: (0, 0),
-                    };
+                    self.text = TextWindow::new(
+                        TextBuffer::from_string(&file_contents),
+                        (self.metrics.rows, self.metrics.cols),
+                    );
                     self.path = Some(path);
                     self.tab = Tab::Edit;
                     self.dirty = false;
@@ -846,27 +860,13 @@ impl Applet for Editor {
                 }
             }
             Msg::Rename => {
-                if let Tab::Meta { path_buffer, .. } = &mut self.tab {
-                    let path_string = path_buffer.content_string();
-                    let path_buf = PathBuf::from(path_string);
-                    if self.path.as_ref() != Some(&path_buf) {
-                        self.path = Some(path_buf);
-                        self.dirty = true;
-                    }
-                    self.tab = Tab::Edit;
-                }
+                self.update_path_from_meta();
             }
             Msg::New => {
-                if let Tab::Meta { path_buffer, .. } = &mut self.tab {
-                    let path_string = path_buffer.content_string();
-                    let path_buf = PathBuf::from(path_string);
-                    if self.path.as_ref() != Some(&path_buf) {
-                        self.path = Some(path_buf);
-                        self.dirty = true;
-                    }
-                    self.tab = Tab::Edit;
-                }
-                self.text = TextWindow::new(TextBuffer::empty());
+                // Feels like there's a better way to chop this up.
+                self.update_path_from_meta();
+                self.text =
+                    TextWindow::new(TextBuffer::empty(), (self.metrics.rows, self.metrics.cols));
             }
             Msg::Save => {
                 if let Some(path) = &self.path {
@@ -916,6 +916,8 @@ fn main() {
 
     let char_recognizer = CharRecognizer::new(&[], &metrics);
 
+    let dimensions = (metrics.rows, metrics.cols);
+
     let mut widget = Editor {
         path: None,
         template_path,
@@ -925,7 +927,7 @@ fn main() {
         template_offset: 0,
         templates: vec![],
         char_recognizer,
-        text: TextWindow::new(TextBuffer::from_string(&file_string)),
+        text: TextWindow::new(TextBuffer::from_string(&file_string), dimensions),
         dirty: false,
         tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
     };
