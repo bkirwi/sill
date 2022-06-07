@@ -17,7 +17,7 @@ pub const PRINTABLE_ASCII: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi
 /// This differs from the suggested behaviour for $P, since it recenters and scales based on a
 /// bounding box instead of the data itself. This is important for textual data, since the only
 /// difference between an apostrophe and a comma is the position in the grid.
-fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
+pub fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
     let mut points = Points::resample(ink);
 
     let mut center = points.centroid();
@@ -29,8 +29,8 @@ fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
     points
 }
 
-/// The format of the template file, used only for persistance. The cows allow us to save some
-/// copying when writing the file; see from_templates for the borrow.
+/// The format of the template file, used only for persistence. The cows allow us to save some
+/// copying when writing the file; see `new` for the borrow.
 #[derive(Serialize, Deserialize)]
 pub struct TemplateFile<'a> {
     templates: BTreeMap<char, Vec<Cow<'a, str>>>,
@@ -107,40 +107,32 @@ pub struct CharTemplates {
 pub struct CharRecognizer {
     templates: Vec<Points>,
     chars: Vec<char>,
-    metrics: Metrics,
 }
 
 impl CharRecognizer {
-    pub fn new(input: &[CharTemplates], metrics: &Metrics) -> CharRecognizer {
+    pub fn new(input: impl IntoIterator<Item = (Points, char)>) -> CharRecognizer {
         let mut templates = vec![];
         let mut chars = vec![];
-        for ts in input {
-            for template in &ts.templates {
-                if template.ink.len() == 0 {
-                    continue;
-                }
-                templates.push(ink_to_points(&template.ink, metrics));
-                chars.push(ts.char);
-            }
+        for (p, c) in input {
+            templates.push(p);
+            chars.push(c);
         }
-        CharRecognizer {
-            templates,
-            chars,
-            metrics: metrics.clone(),
-        }
+        CharRecognizer { templates, chars }
     }
 
-    pub fn best_match(&self, ink: &Ink, threshold: f32) -> Option<char> {
+    pub fn best_match(&mut self, query: &Points, threshold: f32) -> Option<char> {
         if self.templates.is_empty() {
             return None;
         }
 
-        let query = ink_to_points(ink, &self.metrics);
         let (best, score) = query.recognize(&self.templates);
+        // Put good matches at the beginning of the vec. This makes matching faster:
+        // if we find a good match early on, we can abandon bad ones sooner.
+        self.promote(best);
         if score > threshold {
             None
         } else {
-            Some(self.chars[best])
+            Some(self.chars[0])
         }
     }
 
@@ -150,24 +142,5 @@ impl CharRecognizer {
         }
         self.templates.swap(0, index);
         self.chars.swap(0, index)
-    }
-
-    fn look_for_trouble(&mut self) {
-        let count = self.templates.len();
-        if count < 2 {
-            return;
-        }
-        for i in 0..count {
-            self.promote(i);
-            let index = self.templates[0].recognize(&self.templates[1..]).0 + 1;
-            let expected = self.chars[0];
-            let actual = self.chars[index];
-            if expected != actual {
-                eprintln!(
-                    "Yikes! Closest match for a {} is actually {}",
-                    expected, actual
-                );
-            }
-        }
     }
 }

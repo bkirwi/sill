@@ -1,5 +1,5 @@
+use armrest::libremarkable::framebuffer::common::color;
 use armrest::ui::{Canvas, Fragment, Side, TextFragment};
-use libremarkable::framebuffer::common::color;
 
 #[derive(Hash)]
 pub struct Border {

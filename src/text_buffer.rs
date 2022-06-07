@@ -15,7 +15,11 @@ impl TextBuffer {
     }
 
     pub fn from_string(str: &str) -> TextBuffer {
-        let contents = str.lines().map(|line| line.chars().collect()).collect();
+        if str.is_empty() {
+            // `lines` on an empty str will return an empty vec, which is bad.
+            return TextBuffer { contents: vec![] };
+        }
+        let contents: Vec<_> = str.lines().map(|line| line.chars().collect()).collect();
         TextBuffer { contents }
     }
 
@@ -56,6 +60,23 @@ impl TextBuffer {
     pub fn write(&mut self, (row, col): Coord, c: char) {
         self.pad(row, col + 1);
         self.contents[row][col] = c;
+    }
+
+    pub fn splice(&mut self, at: Coord, mut buffer: TextBuffer) {
+        let (row, col) = at;
+        // Awkward little dance: split `row`, push the end of it onto the end of the insert,
+        // push the beginning of the insert on the end of row, then splice the rest in.
+        let insert_row = &mut self.contents[row];
+        let trailer = insert_row.split_off(col);
+        buffer
+            .contents
+            .last_mut()
+            .expect("last line from a non-empty vec")
+            .extend(trailer);
+        let mut contents = buffer.contents.into_iter();
+        insert_row.extend(contents.next().expect("first line from a non-empty vec"));
+        let next_row = row + 1;
+        self.contents.splice(next_row..next_row, contents);
     }
 
     /// Remove all the contents between the two provided coordinates.

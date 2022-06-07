@@ -7,17 +7,18 @@ use std::fs::File;
 use std::io::ErrorKind;
 
 use std::path::PathBuf;
-use std::{env, fs, io};
+use std::{env, fs, io, mem};
 
 use armrest::app;
 use armrest::app::{Applet, Component};
+use armrest::dollar::Points;
 
 use armrest::ink::Ink;
+use armrest::libremarkable::framebuffer::cgmath::Vector2;
+use armrest::libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
 use armrest::ui::canvas::Fragment;
 use armrest::ui::{Side, Text, TextFragment, View, Widget};
 use clap::Arg;
-use libremarkable::framebuffer::cgmath::Vector2;
-use libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
 use once_cell::sync::Lazy;
 use rusttype::Scale;
 
@@ -99,7 +100,7 @@ impl Metrics {
 #[derive(Clone)]
 pub enum Tab {
     Meta {
-        path_buffer: TextBuffer,
+        path_window: TextWindow,
         suggested: Vec<PathBuf>,
     },
     Edit,
@@ -108,18 +109,41 @@ pub enum Tab {
 
 type Coord = (usize, usize);
 
-struct TextWindow {
+#[derive(Clone)]
+
+pub struct Carat {
+    coord: Coord,
+    ink: Ink,
+}
+
+#[derive(Clone)]
+pub enum Selection {
+    Normal,
+    Single { carat: Carat },
+    Range { start: Carat, end: Carat },
+}
+
+impl Default for Selection {
+    fn default() -> Self {
+        Selection::Normal
+    }
+}
+
+#[derive(Clone)]
+pub struct TextWindow {
     buffer: TextBuffer,
-    insert: Option<(Coord, TextBuffer)>,
+    grid_metrics: Metrics,
+    selection: Selection,
     dimensions: Coord,
     origin: Coord,
 }
 
 impl TextWindow {
-    fn new(buffer: TextBuffer, dimensions: Coord) -> TextWindow {
+    fn new(buffer: TextBuffer, metrics: Metrics, dimensions: Coord) -> TextWindow {
         TextWindow {
             buffer,
-            insert: None,
+            grid_metrics: metrics,
+            selection: Selection::Normal,
             dimensions,
             origin: (0, 0),
         }
@@ -131,67 +155,110 @@ impl TextWindow {
         *col = (*col as isize + col_d * self.dimensions.1 as isize).max(0) as usize;
     }
 
-    fn insert_coords(&self, (row, col): Coord) -> Option<Coord> {
-        self.insert
-            .as_ref()
-            .and_then(|((r, c), _)| match row.cmp(r) {
-                Ordering::Less => None,
-                Ordering::Equal => {
-                    if col < *c {
-                        None
-                    } else {
-                        Some((row - r, col - c))
+    pub fn write(&mut self, coord: Coord, c: char) {
+        self.buffer.write(coord, c);
+    }
+
+    pub fn carat(&mut self, carat: Carat) {
+        // self.buffer.pad(carat.coord.0, carat.coord.1);
+        self.selection = match mem::take(&mut self.selection) {
+            Selection::Normal => Selection::Single { carat },
+            Selection::Single { carat: original } => {
+                let (start, end) = if carat.coord < original.coord {
+                    (carat, original)
+                } else {
+                    (original, carat)
+                };
+                Selection::Range { start, end }
+            }
+            Selection::Range { .. } => {
+                // Maybe eventually I'll prevent this case, but for now let's just reset.
+                Selection::Normal
+            }
+        };
+    }
+
+    fn fragment(&self, coord: Coord) -> Option<TextFragment> {
+        fragment_at(&self.buffer, coord, &self.grid_metrics)
+    }
+
+    // TODO: would be nice to enwidgetize all this!
+    fn ink_row(&mut self, ink: Ink, row: usize, text_stuff: &mut TextStuff) {
+        let ink_type = InkType::classify(&self.grid_metrics, ink);
+        match ink_type {
+            InkType::Scratch { col } => {
+                let col = self.origin.1 + col;
+                self.write((row, col), ' ');
+                text_stuff.tentative_recognitions.clear();
+            }
+            InkType::Glyphs { col, parts } => {
+                let mut col = self.origin.1 + col;
+                if matches!(self.selection, Selection::Normal) {
+                    for ink in parts {
+                        if let Some(c) = text_stuff
+                            .char_recognizer
+                            .best_match(&ink_to_points(&ink, &self.grid_metrics), f32::MAX)
+                        {
+                            self.write((row, col), c);
+                            text_stuff.record_recognition((row, col), ink, c);
+                        }
+                        col += 1;
+                    }
+                } else {
+                    let ink = parts.into_iter().next().unwrap();
+                    match text_stuff
+                        .big_recognizer
+                        .best_match(&Points::normalize(&ink), f32::MAX)
+                    {
+                        Some('X') => {
+                            if let Selection::Range { start, end } = &self.selection {
+                                let coord = (row, col);
+                                if start.coord <= coord && coord < end.coord {
+                                    self.buffer.remove(start.coord, end.coord);
+                                }
+                            }
+                            self.selection = Selection::Normal;
+                        }
+                        Some('S') => {
+                            if let Selection::Range { start, end } = &self.selection {
+                                self.buffer.pad(start.coord.0, start.coord.1);
+                                let (lines, spaces) = if start.coord.0 == end.coord.0 {
+                                    (0, end.coord.1 - start.coord.1)
+                                } else {
+                                    (end.coord.0 - start.coord.0, end.coord.1)
+                                };
+                                let mut string = String::new();
+                                for _ in 0..lines {
+                                    string.push('\n');
+                                }
+                                for _ in 0..spaces {
+                                    string.push(' ');
+                                }
+                                self.buffer
+                                    .splice(start.coord, TextBuffer::from_string(&string));
+                            }
+                            self.selection = Selection::Normal;
+                        }
+                        _ => {}
                     }
                 }
-                Ordering::Greater => Some((row - r, col)),
-            })
-    }
-
-    pub fn write(&mut self, coord: Coord, c: char) {
-        if let Some(insert_coords) = self.insert_coords(coord) {
-            let (_, b) = self.insert.as_mut().unwrap();
-            b.write(insert_coords, c);
-        } else {
-            self.buffer.write(coord, c);
-        }
-    }
-
-    pub fn open_insert(&mut self, coord: Coord) {
-        // FIXME: off by one.
-        self.buffer.pad(coord.0, coord.1);
-        self.insert = Some((coord, TextBuffer::empty()));
-    }
-
-    pub fn close_insert(&mut self, coord: Coord) {
-        if let Some(coord) = self.insert_coords(coord) {
-            self.insert.as_mut().unwrap().1.pad(coord.0, coord.1);
-        }
-
-        if let Some(((row, col), mut buffer)) = self.insert.take() {
-            self.buffer.pad(row, col);
-            // Awkward little dance: split `row`, push the end of it onto the end of the insert,
-            // push the beginning of the insert on the end of row, then splice the rest in.
-            let insert_row = &mut self.buffer.contents[row];
-            let trailer = insert_row.split_off(col);
-            buffer
-                .contents
-                .last_mut()
-                .expect("last line from a non-empty vec")
-                .extend(trailer);
-            let mut contents = buffer.contents.into_iter();
-            insert_row.extend(contents.next().expect("first line from a non-empty vec"));
-            let next_row = row + 1;
-            self.buffer.contents.splice(next_row..next_row, contents);
-        }
-    }
-
-    fn fragment(&self, coord: Coord, metrics: &Metrics) -> Option<TextFragment> {
-        if let Some(insert_coords) = self.insert_coords(coord) {
-            let (_, b) = self.insert.as_ref().unwrap();
-            fragment_at(b, insert_coords, metrics)
-        } else {
-            fragment_at(&self.buffer, coord, metrics)
-        }
+            }
+            InkType::Strikethrough { start, end } => {
+                let start = self.origin.1 + start;
+                let end = self.origin.1 + end;
+                self.buffer.remove((row, start), (row, end));
+                text_stuff.tentative_recognitions.clear();
+            }
+            InkType::Carat { col, ink } => {
+                let col = self.origin.1 + col;
+                self.carat(Carat {
+                    coord: (row, col),
+                    ink,
+                });
+                text_stuff.tentative_recognitions.clear();
+            }
+            InkType::Junk => {}
+        };
     }
 }
 
@@ -205,6 +272,14 @@ struct Recognition {
     overwrites: usize,
 }
 
+struct TextStuff {
+    templates: Vec<CharTemplates>,
+    char_recognizer: CharRecognizer,
+    big_recognizer: CharRecognizer,
+    // TODO: probably store this in TextWindow.
+    tentative_recognitions: VecDeque<Recognition>,
+}
+
 struct Editor {
     metrics: Metrics,
 
@@ -216,15 +291,35 @@ struct Editor {
     // template stuff
     template_path: PathBuf,
     template_offset: usize,
-    templates: Vec<CharTemplates>,
-    char_recognizer: CharRecognizer,
 
-    tentative_recognitions: VecDeque<Recognition>,
+    text_stuff: TextStuff,
 
     // text editor stuff
     path: Option<PathBuf>, // None if we haven't chosen a name yet.
     text: TextWindow,
     dirty: bool,
+}
+
+impl TextStuff {
+    fn init_recognizer(&mut self, metrics: &Metrics) {
+        self.char_recognizer = CharRecognizer::new(self.templates.iter().flat_map(|ct| {
+            let c = ct.char;
+            ct.templates
+                .iter()
+                .map(move |t| (ink_to_points(&t.ink, metrics), c))
+        }));
+        self.big_recognizer = CharRecognizer::new(
+            self.templates
+                .iter()
+                .filter(|ct| ['X', 'C', 'V', 'S'].contains(&ct.char))
+                .flat_map(|ct| {
+                    let c = ct.char;
+                    ct.templates
+                        .iter()
+                        .map(move |t| (Points::normalize(&t.ink), c))
+                }),
+        );
+    }
 }
 
 impl Editor {
@@ -235,14 +330,14 @@ impl Editor {
             Err(e) => return Err(e),
         };
 
-        self.templates = data.to_templates(self.metrics.height);
-        self.char_recognizer = CharRecognizer::new(&self.templates, &self.metrics);
+        self.text_stuff.templates = data.to_templates(self.metrics.height);
+        self.text_stuff.init_recognizer(&self.metrics);
 
         Ok(())
     }
 
     fn save_templates(&self) -> io::Result<()> {
-        let file_contents = TemplateFile::new(&self.templates);
+        let file_contents = TemplateFile::new(&self.text_stuff.templates);
         serde_json::to_writer(File::create(&self.template_path)?, &file_contents)?;
         Ok(())
     }
@@ -286,7 +381,10 @@ impl Editor {
                     end_offset: 0,
                 });
             draw_label(row, margin_view);
-            line_view.handlers().on_ink(|ink| Msg::Write { row, ink });
+            line_view
+                .handlers()
+                .pad(10)
+                .on_ink(|ink| Msg::Write { row, ink });
             for col in (0..self.metrics.cols).map(|c| c + col_offset) {
                 let char_view = line_view.split_off(Side::Left, self.metrics.width);
                 draw_cell(row, col, char_view);
@@ -317,7 +415,9 @@ impl Editor {
             }
         }
     }
+}
 
+impl TextStuff {
     /// Our character recognizer is extremely fallible. To help improve it, we
     /// track the last few recognitions in a buffer. If we have to overwrite a
     /// recent recognition within the buffer window, we assume that the old ink
@@ -346,10 +446,10 @@ impl Editor {
                 if r.overwrites > 0 {
                     if let Some(t) = self.templates.iter_mut().find(|c| c.char == r.best_char) {
                         t.templates.push(Template::from_ink(r.ink));
-                        self.error_string = format!(
-                            "NB: saved template for char '{}' at coordinates {:?}",
-                            r.best_char, r.coord
-                        );
+                        // self.error_string = format!(
+                        //     "NB: saved template for char '{}' at coordinates {:?}",
+                        //     r.best_char, r.coord
+                        // );
                     }
                 }
             }
@@ -415,7 +515,11 @@ impl Widget for Editor {
                 let path_text = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT)
                     .message(Msg::SwitchTab {
                         tab: Tab::Meta {
-                            path_buffer: TextBuffer::from_string(&path),
+                            path_window: TextWindow::new(
+                                TextBuffer::from_string(&path),
+                                self.metrics.clone(),
+                                (1, self.metrics.cols),
+                            ),
                             suggested: suggestions(&path).unwrap_or_default(),
                         },
                     })
@@ -451,21 +555,40 @@ impl Widget for Editor {
 
         match &self.tab {
             Tab::Meta {
-                path_buffer,
+                path_window,
                 suggested,
             } => {
                 self.draw_grid(
                     &mut view,
-                    1,
-                    0,
-                    0,
+                    path_window.dimensions.0,
+                    path_window.origin.0,
+                    path_window.origin.1,
                     |_n, _v| {},
-                    |row, col, char_view| {
-                        let ch = fragment_at(path_buffer, (row, col), &self.metrics);
+                    |row, col, mut char_view| {
+                        let coord = (row, col);
+                        let ch = path_window.fragment(coord);
+                        let insert_area = match &path_window.selection {
+                            Selection::Normal => false,
+                            Selection::Single { carat } => {
+                                if coord == carat.coord {
+                                    char_view.annotate(&carat.ink);
+                                }
+                                coord >= carat.coord
+                            }
+                            Selection::Range { start, end } => {
+                                if coord == start.coord {
+                                    char_view.annotate(&start.ink);
+                                }
+                                if coord == end.coord {
+                                    char_view.annotate(&end.ink);
+                                }
+                                coord >= start.coord && coord < end.coord
+                            }
+                        };
                         let grid = GridCell {
                             baseline: self.metrics.baseline,
                             char: ch,
-                            insert_area: false,
+                            insert_area,
                         };
                         char_view.draw(&grid);
                     },
@@ -505,13 +628,31 @@ impl Widget for Editor {
             Tab::Edit => {
                 self.draw_grid(
                     &mut view,
-                    self.metrics.rows,
+                    self.text.dimensions.0,
                     self.text.origin.0,
                     self.text.origin.1,
                     |_n, _v| {},
-                    |row, col, char_view| {
-                        let ch = self.text.fragment((row, col), &self.metrics);
-                        let insert_area = self.text.insert_coords((row, col)).is_some();
+                    |row, col, mut char_view| {
+                        let coord = (row, col);
+                        let ch = self.text.fragment(coord);
+                        let insert_area = match &self.text.selection {
+                            Selection::Normal => false,
+                            Selection::Single { carat } => {
+                                if coord == carat.coord {
+                                    char_view.annotate(&carat.ink);
+                                }
+                                coord >= carat.coord
+                            }
+                            Selection::Range { start, end } => {
+                                if coord == start.coord {
+                                    char_view.annotate(&start.ink);
+                                }
+                                if coord == end.coord {
+                                    char_view.annotate(&end.ink);
+                                }
+                                coord >= start.coord && coord < end.coord
+                            }
+                        };
                         let grid = GridCell {
                             baseline: self.metrics.baseline,
                             char: ch,
@@ -537,7 +678,7 @@ impl Widget for Editor {
                     self.template_offset,
                     0,
                     |row, label_view| {
-                        if let Some(templates) = self.templates.get(row) {
+                        if let Some(templates) = self.text_stuff.templates.get(row) {
                             let char_text = Text::literal(
                                 self.metrics.height,
                                 &*FONT,
@@ -547,7 +688,7 @@ impl Widget for Editor {
                         }
                     },
                     |row, col, mut template_view| {
-                        let maybe_char = self.templates.get(row);
+                        let maybe_char = self.text_stuff.templates.get(row);
                         let grid = GridCell {
                             baseline: self.metrics.baseline,
                             // char: None,
@@ -591,7 +732,7 @@ enum InkType {
     // Something that appears to be one or more characters.
     Glyphs { col: usize, parts: Vec<Ink> },
     // A line between characters; typically represents an insertion point.
-    Carat { col: usize },
+    Carat { col: usize, ink: Ink },
     // None of the above: typically, ignore.
     Junk,
 }
@@ -633,6 +774,7 @@ impl InkType {
         {
             return InkType::Carat {
                 col: center.round() as usize,
+                ink: ink.translate(-Vector2::new(center.round() * metrics.width as f32, 0.0)),
             };
         }
 
@@ -701,8 +843,8 @@ fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
 
 impl Editor {
     fn update_path_from_meta(&mut self) {
-        if let Tab::Meta { path_buffer, .. } = &mut self.tab {
-            let path_string = path_buffer.content_string();
+        if let Tab::Meta { path_window, .. } = &mut self.tab {
+            let path_string = path_window.buffer.content_string();
             let path_buf = PathBuf::from(path_string);
             if self.path.as_ref() != Some(&path_buf) {
                 self.path = Some(path_buf);
@@ -719,73 +861,22 @@ impl Applet for Editor {
     fn update(&mut self, message: Self::Message) -> Option<Self::Upstream> {
         match message {
             Msg::Write { row, ink } => {
-                let ink_type = InkType::classify(&self.metrics, ink);
                 match &mut self.tab {
                     Tab::Meta {
-                        path_buffer,
+                        path_window,
                         suggested,
                     } => {
-                        match ink_type {
-                            InkType::Scratch { col } => {
-                                path_buffer.write((row, col), ' ');
-                            }
-                            InkType::Glyphs { mut col, parts } => {
-                                for ink in parts {
-                                    if let Some(c) = self.char_recognizer.best_match(&ink, f32::MAX)
-                                    {
-                                        path_buffer.write((row, col), c);
-                                    }
-                                    col += 1;
-                                }
-                            }
-                            InkType::Strikethrough { start, end } => {
-                                path_buffer.remove((row, start), (row, end));
-                            }
-                            InkType::Junk => {}
-                            InkType::Carat { .. } => {}
-                        }
-
-                        *suggested = suggestions(&path_buffer.content_string()).unwrap_or_default();
+                        path_window.ink_row(ink, row, &mut self.text_stuff);
+                        *suggested =
+                            suggestions(&path_window.buffer.content_string()).unwrap_or_default();
                     }
                     Tab::Edit => {
                         self.dirty = true;
-                        match ink_type {
-                            InkType::Scratch { col } => {
-                                let col = self.text.origin.1 + col;
-                                self.text.write((row, col), ' ');
-                                self.tentative_recognitions.clear();
-                            }
-                            InkType::Glyphs { col, parts } => {
-                                let mut col = self.text.origin.1 + col;
-                                for ink in parts {
-                                    if let Some(c) = self.char_recognizer.best_match(&ink, f32::MAX)
-                                    {
-                                        self.text.write((row, col), c);
-                                        self.record_recognition((row, col), ink, c);
-                                    }
-                                    col += 1;
-                                }
-                            }
-                            InkType::Strikethrough { start, end } => {
-                                let start = self.text.origin.1 + start;
-                                let end = self.text.origin.1 + end;
-                                self.text.buffer.remove((row, start), (row, end));
-                                self.tentative_recognitions.clear();
-                            }
-                            InkType::Carat { col } => {
-                                let col = self.text.origin.1 + col;
-                                if self.text.insert.is_none() {
-                                    self.text.open_insert((row, col));
-                                } else {
-                                    self.text.close_insert((row, col));
-                                };
-                                self.tentative_recognitions.clear();
-                            }
-                            InkType::Junk => {}
-                        };
+                        self.text.ink_row(ink, row, &mut self.text_stuff);
                     }
                     Tab::Template => {
-                        if let Some(char_data) = self.templates.get_mut(row) {
+                        let ink_type = InkType::classify(&self.metrics, ink);
+                        if let Some(char_data) = self.text_stuff.templates.get_mut(row) {
                             match ink_type {
                                 InkType::Strikethrough { start, end } => {
                                     let line_len = char_data.templates.len();
@@ -824,7 +915,7 @@ impl Applet for Editor {
             Msg::SwitchTab { tab } => {
                 if !matches!(tab, Tab::Template) && matches!(self.tab, Tab::Template) {
                     self.report_error(self.save_templates());
-                    self.char_recognizer = CharRecognizer::new(&self.templates, &self.metrics);
+                    self.text_stuff.init_recognizer(&self.metrics);
                 }
                 self.tab = tab;
             }
@@ -857,22 +948,25 @@ impl Applet for Editor {
                 if let Some(file_contents) = self.report_error(fs::read_to_string(&path)) {
                     self.text = TextWindow::new(
                         TextBuffer::from_string(&file_contents),
+                        self.metrics.clone(),
                         (self.metrics.rows, self.metrics.cols),
                     );
                     self.path = Some(path);
                     self.tab = Tab::Edit;
                     self.dirty = false;
-                    self.tentative_recognitions.clear();
+                    self.text_stuff.tentative_recognitions.clear();
                 }
             }
             Msg::Rename => {
                 self.update_path_from_meta();
             }
             Msg::New => {
-                // Feels like there's a better way to chop this up.
                 self.update_path_from_meta();
-                self.text =
-                    TextWindow::new(TextBuffer::empty(), (self.metrics.rows, self.metrics.cols));
+                self.text = TextWindow::new(
+                    TextBuffer::empty(),
+                    self.metrics.clone(),
+                    (self.metrics.rows, self.metrics.cols),
+                );
             }
             Msg::Save => {
                 if let Some(path) = &self.path {
@@ -920,22 +1014,23 @@ fn main() {
 
     let metrics = Metrics::new(DEFAULT_CHAR_HEIGHT);
 
-    let char_recognizer = CharRecognizer::new(&[], &metrics);
-
     let dimensions = (metrics.rows, metrics.cols);
 
     let mut widget = Editor {
         path: None,
         template_path,
-        metrics,
+        metrics: metrics.clone(),
         error_string: "".to_string(),
         tab: Tab::Edit,
         template_offset: 0,
-        templates: vec![],
-        char_recognizer,
-        text: TextWindow::new(TextBuffer::from_string(&file_string), dimensions),
+        text_stuff: TextStuff {
+            templates: vec![],
+            char_recognizer: CharRecognizer::new([]),
+            big_recognizer: CharRecognizer::new([]),
+            tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
+        },
+        text: TextWindow::new(TextBuffer::from_string(&file_string), metrics, dimensions),
         dirty: false,
-        tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
     };
 
     let load_result = widget.load_templates();
