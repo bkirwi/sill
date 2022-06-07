@@ -14,5 +14,3 @@ serde_json = "1.0.78"
 xdg = "2.4.1"
 
 armrest = { path = "../armrest", default-features = false }
-libremarkable = { git = "https://github.com/canselcik/libremarkable", default-features = false, features = ['framebuffer'] }
-#libremarkable = { path = "../libremarkable" }
