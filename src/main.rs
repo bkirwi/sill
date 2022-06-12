@@ -44,10 +44,7 @@ const LEFT_MARGIN: i32 = 100;
 
 const TEMPLATE_FILE: &str = "templates.json";
 
-const HELP_TEXT: &str = "Welcome to armrest-edit!
-
-It's a nice editor.
-";
+const HELP_TEXT: &str = include_str!("intro.md");
 
 #[derive(Clone)]
 pub enum Msg {
@@ -212,9 +209,30 @@ impl TextWindow {
                     {
                         Some('X') => {
                             if let Selection::Range { start, end } = &self.selection {
-                                let coord = (row, col);
-                                if start.coord <= coord && coord < end.coord {
-                                    self.buffer.remove(start.coord, end.coord);
+                                let trailing = self.buffer.split_off(end.coord);
+                                let selection = self.buffer.split_off(start.coord);
+                                text_stuff.clipboard = Some(selection);
+                                self.buffer.append(trailing);
+                            }
+                            self.selection = Selection::Normal;
+                        }
+                        Some('C') => {
+                            if let Selection::Range { start, end } = &self.selection {
+                                // Regrettable!
+                                let trailing = self.buffer.split_off(end.coord);
+                                let selection = self.buffer.split_off(start.coord);
+                                text_stuff.clipboard = Some(selection.clone());
+                                self.buffer.append(selection);
+                                self.buffer.append(trailing);
+                            }
+                            self.selection = Selection::Normal;
+                        }
+                        Some('V') => {
+                            if let Selection::Single { carat } = &self.selection {
+                                if let Some(buffer) = text_stuff.clipboard.take() {
+                                    let trailing = self.buffer.split_off(carat.coord);
+                                    self.buffer.append(buffer);
+                                    self.buffer.append(trailing);
                                 }
                             }
                             self.selection = Selection::Normal;
@@ -278,6 +296,7 @@ struct TextStuff {
     big_recognizer: CharRecognizer,
     // TODO: probably store this in TextWindow.
     tentative_recognitions: VecDeque<Recognition>,
+    clipboard: Option<TextBuffer>,
 }
 
 struct Editor {
@@ -383,7 +402,7 @@ impl Editor {
             draw_label(row, margin_view);
             line_view
                 .handlers()
-                .pad(10)
+                // .pad(10)
                 .on_ink(|ink| Msg::Write { row, ink });
             for col in (0..self.metrics.cols).map(|c| c + col_offset) {
                 let char_view = line_view.split_off(Side::Left, self.metrics.width);
@@ -1028,6 +1047,7 @@ fn main() {
             char_recognizer: CharRecognizer::new([]),
             big_recognizer: CharRecognizer::new([]),
             tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
+            clipboard: None,
         },
         text: TextWindow::new(TextBuffer::from_string(&file_string), metrics, dimensions),
         dirty: false,

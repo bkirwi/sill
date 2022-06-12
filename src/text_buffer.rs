@@ -15,33 +15,22 @@ impl TextBuffer {
     }
 
     pub fn from_string(str: &str) -> TextBuffer {
-        if str.is_empty() {
-            // `lines` on an empty str will return an empty vec, which is bad.
-            return TextBuffer { contents: vec![] };
-        }
-        let contents: Vec<_> = str.lines().map(|line| line.chars().collect()).collect();
+        let contents: Vec<_> = str.split('\n').map(|line| line.chars().collect()).collect();
         TextBuffer { contents }
     }
 
-    /// Clamp a pair of coordinates to the nearest valid pair.
-    /// (row, col) is valid if `contents[row][col..col]` wouldn't panic.
+    /// Given a coordinate, find the nearest valid coordinate in the text.
+    /// Cols past the end of a line clamp to the end of the line,
+    /// and rows past the end clamp to the lasts valid coordinate.
     pub fn clamp(&self, coords: Coord) -> Coord {
         let (row, col) = coords;
         let rows = self.contents.len();
-        match (row + 1).cmp(&rows) {
-            Ordering::Less => {
-                let cols = self.contents[row].len();
-                if col > cols {
-                    (row + 1, 0)
-                } else {
-                    (row, col)
-                }
-            }
-            Ordering::Equal => (row, self.contents[row].len().min(col)),
-            Ordering::Greater => {
-                let row = rows - 1;
-                (row, self.contents[row].len())
-            }
+        if row >= rows {
+            let row = rows - 1;
+            (row, self.contents[row].len())
+        } else {
+            let cols = self.contents[row].len();
+            (row, cols.min(col))
         }
     }
 
@@ -60,6 +49,25 @@ impl TextBuffer {
     pub fn write(&mut self, (row, col): Coord, c: char) {
         self.pad(row, col + 1);
         self.contents[row][col] = c;
+    }
+
+    pub fn split_off(&mut self, at: Coord) -> TextBuffer {
+        let (row, col) = self.clamp(at);
+        let insert_row = &mut self.contents[row];
+        let trailer = insert_row.split_off(col);
+        let mut result = Vec::with_capacity(self.contents.len() - row);
+        result.push(trailer);
+        result.extend(self.contents.drain((row + 1)..));
+        TextBuffer { contents: result }
+    }
+
+    pub fn append(&mut self, buffer: TextBuffer) {
+        let mut iter = buffer.contents.into_iter();
+        self.contents
+            .last_mut()
+            .unwrap()
+            .extend(iter.next().unwrap());
+        self.contents.extend(iter);
     }
 
     pub fn splice(&mut self, at: Coord, mut buffer: TextBuffer) {
