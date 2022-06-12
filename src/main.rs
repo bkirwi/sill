@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::ErrorKind;
@@ -188,10 +188,10 @@ impl TextWindow {
                 self.write((row, col), ' ');
                 text_stuff.tentative_recognitions.clear();
             }
-            InkType::Glyphs { col, parts } => {
-                let mut col = self.origin.1 + col;
+            InkType::Glyphs { tokens } => {
                 if matches!(self.selection, Selection::Normal) {
-                    for ink in parts {
+                    for (col, ink) in tokens {
+                        let col = col + self.origin.1;
                         if let Some(c) = text_stuff
                             .char_recognizer
                             .best_match(&ink_to_points(&ink, &self.grid_metrics), f32::MAX)
@@ -199,10 +199,9 @@ impl TextWindow {
                             self.write((row, col), c);
                             text_stuff.record_recognition((row, col), ink, c);
                         }
-                        col += 1;
                     }
                 } else {
-                    let ink = parts.into_iter().next().unwrap();
+                    let ink = tokens.into_iter().next().unwrap().1;
                     match text_stuff
                         .big_recognizer
                         .best_match(&Points::normalize(&ink), f32::MAX)
@@ -749,7 +748,7 @@ enum InkType {
     // A scratch-out of a single cell: typically, replace with whitespace.
     Scratch { col: usize },
     // Something that appears to be one or more characters.
-    Glyphs { col: usize, parts: Vec<Ink> },
+    Glyphs { tokens: HashMap<usize, Ink> },
     // A line between characters; typically represents an insertion point.
     Carat { col: usize, ink: Ink },
     // None of the above: typically, ignore.
@@ -757,6 +756,76 @@ enum InkType {
 }
 
 impl InkType {
+    fn tokenize(metrics: &Metrics, ink: &Ink) -> HashMap<usize, Ink> {
+        // Idea: if the center of a stroke is ~this close to the margin, it's ambiguous,
+        // and we decide which cell it belongs to by looking at where the neigbouring unambiguous
+        // strokes end up.
+        const LIMINAL_SPACE: f32 = 0.2;
+
+        let strokes: Vec<_> = ink
+            .strokes()
+            .map(|s| {
+                let mut i = Ink::new();
+                for p in s {
+                    i.push(p.x, p.y, p.z);
+                }
+                i.pen_up();
+                i
+            })
+            .collect();
+
+        let mut index_to_time_range = HashMap::new();
+        for stroke in &strokes {
+            let center = (stroke.centroid().x / metrics.width as f32).max(0.0);
+            if (center - center.round()).abs() > LIMINAL_SPACE {
+                let index = center as usize;
+                let (min, max) = index_to_time_range
+                    .entry(index)
+                    .or_insert((f32::INFINITY, f32::NEG_INFINITY));
+                *min = min.min(stroke.t_range.min);
+                *max = max.max(stroke.t_range.max);
+            }
+        }
+
+        let mut index_to_ink: HashMap<usize, Ink> = HashMap::new();
+        for stroke in strokes {
+            let center = (stroke.centroid().x / metrics.width as f32).max(0.0);
+            let index = if (center - center.round()).abs() > LIMINAL_SPACE {
+                center as usize
+            } else {
+                let right = center.round() as usize;
+                if right == 0 {
+                    0
+                } else {
+                    let left = right - 1;
+                    match (
+                        index_to_time_range.get(&left),
+                        index_to_time_range.get(&right),
+                    ) {
+                        (None, None) => center as usize,
+                        (Some(_), None) => left,
+                        (None, Some(_)) => right,
+                        (Some((_, left_max)), Some((right_min, _))) => {
+                            let left_d = stroke.t_range.min - left_max;
+                            let right_d = right_min - stroke.t_range.max;
+                            if left_d < right_d {
+                                left
+                            } else {
+                                right
+                            }
+                        }
+                    }
+                }
+            };
+            index_to_ink.entry(index).or_default().append(
+                stroke.translate(-Vector2::new(index as f32 * metrics.width as f32, 0.0)),
+                f32::MAX,
+            );
+        }
+
+        index_to_ink
+    }
+
     fn classify(metrics: &Metrics, ink: Ink) -> InkType {
         if ink.len() == 0 {
             return InkType::Junk;
@@ -807,32 +876,8 @@ impl InkType {
             return InkType::Scratch { col };
         }
 
-        // Try and partition into multiple glyphs.
-        let indices: Vec<_> = ink
-            .strokes()
-            .map(|stroke| {
-                let sum_x: f32 = stroke.iter().map(|p| p.x as f32).sum();
-                let center_x = sum_x / stroke.len() as f32;
-                let center_x = center_x / metrics.width as f32;
-                center_x.max(0.0) as usize
-            })
-            .collect();
-
-        let min_col = indices.iter().copied().min().unwrap();
-        let max_col = indices.iter().copied().max().unwrap();
-        let mut inks = vec![Ink::new(); (max_col - min_col) + 1];
-        for (stroke, col) in ink.strokes().zip(indices) {
-            // Find the midpoint, bucket, and translate to an index.
-            let ink = &mut inks[col - min_col];
-            let x_offset = col as f32 * metrics.width as f32;
-            for p in stroke {
-                ink.push(p.x - x_offset, p.y, p.z);
-            }
-            ink.pen_up();
-        }
         InkType::Glyphs {
-            col: min_col,
-            parts: inks,
+            tokens: Self::tokenize(metrics, &ink),
         }
     }
 }
@@ -878,59 +923,63 @@ impl Applet for Editor {
     type Upstream = ();
 
     fn update(&mut self, message: Self::Message) -> Option<Self::Upstream> {
+        match &message {
+            Msg::Write { row, .. } => {
+                dbg!(row);
+            }
+            _ => {}
+        }
+
         match message {
-            Msg::Write { row, ink } => {
-                match &mut self.tab {
-                    Tab::Meta {
-                        path_window,
-                        suggested,
-                    } => {
-                        path_window.ink_row(ink, row, &mut self.text_stuff);
-                        *suggested =
-                            suggestions(&path_window.buffer.content_string()).unwrap_or_default();
-                    }
-                    Tab::Edit => {
-                        self.dirty = true;
-                        self.text.ink_row(ink, row, &mut self.text_stuff);
-                    }
-                    Tab::Template => {
-                        let ink_type = InkType::classify(&self.metrics, ink);
-                        if let Some(char_data) = self.text_stuff.templates.get_mut(row) {
-                            match ink_type {
-                                InkType::Strikethrough { start, end } => {
-                                    let line_len = char_data.templates.len();
-                                    for t in &mut char_data.templates
-                                        [start.min(line_len)..end.min(line_len)]
-                                    {
-                                        t.serialized.clear();
-                                        t.ink.clear();
-                                    }
+            Msg::Write { row, ink } => match &mut self.tab {
+                Tab::Meta {
+                    path_window,
+                    suggested,
+                } => {
+                    path_window.ink_row(ink, row, &mut self.text_stuff);
+                    *suggested =
+                        suggestions(&path_window.buffer.content_string()).unwrap_or_default();
+                }
+                Tab::Edit => {
+                    self.dirty = true;
+                    self.text.ink_row(ink, row, &mut self.text_stuff);
+                }
+                Tab::Template => {
+                    let ink_type = InkType::classify(&self.metrics, ink);
+                    if let Some(char_data) = self.text_stuff.templates.get_mut(row) {
+                        match ink_type {
+                            InkType::Strikethrough { start, end } => {
+                                let line_len = char_data.templates.len();
+                                for t in
+                                    &mut char_data.templates[start.min(line_len)..end.min(line_len)]
+                                {
+                                    t.serialized.clear();
+                                    t.ink.clear();
                                 }
-                                InkType::Scratch { col } => {
-                                    if let Some(prev) = char_data.templates.get_mut(col) {
-                                        prev.ink.clear();
-                                        prev.serialized.clear();
-                                    }
-                                }
-                                InkType::Glyphs { mut col, parts } => {
-                                    char_data.templates.resize_with(
-                                        char_data.templates.len().max(col + parts.len()),
-                                        || Template::from_ink(Ink::new()),
-                                    );
-                                    for ink in parts {
-                                        let mut prev = &mut char_data.templates[col];
-                                        prev.ink.append(ink, 0.5);
-                                        // TODO: put this off?
-                                        prev.serialized = prev.ink.to_string();
-                                        col += 1;
-                                    }
-                                }
-                                _ => {}
                             }
+                            InkType::Scratch { col } => {
+                                if let Some(prev) = char_data.templates.get_mut(col) {
+                                    prev.ink.clear();
+                                    prev.serialized.clear();
+                                }
+                            }
+                            InkType::Glyphs { tokens } => {
+                                for (col, ink) in tokens {
+                                    if col >= char_data.templates.len() {
+                                        char_data
+                                            .templates
+                                            .resize_with(col + 1, || Template::from_ink(Ink::new()))
+                                    }
+                                    let mut prev = &mut char_data.templates[col];
+                                    prev.ink.append(ink, 0.5);
+                                    prev.serialized = prev.ink.to_string();
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
-            }
+            },
             Msg::SwitchTab { tab } => {
                 if !matches!(tab, Tab::Template) && matches!(self.tab, Tab::Template) {
                     self.report_error(self.save_templates());
