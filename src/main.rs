@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
 
 use std::collections::{HashMap, VecDeque};
@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::ErrorKind;
 
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::{env, fs, io, mem};
 
 use armrest::app;
@@ -39,8 +40,10 @@ static BASE_DIRS: Lazy<BaseDirectories> =
 
 const SCREEN_HEIGHT: i32 = DISPLAYHEIGHT as i32;
 const SCREEN_WIDTH: i32 = DISPLAYWIDTH as i32;
+
 const TOP_MARGIN: i32 = 100;
 const LEFT_MARGIN: i32 = 100;
+const DEFAULT_CHAR_HEIGHT: i32 = 40;
 
 const TEMPLATE_FILE: &str = "templates.json";
 
@@ -48,6 +51,7 @@ const HELP_TEXT: &str = include_str!("intro.md");
 
 #[derive(Clone)]
 pub enum Msg {
+    SwitchToMeta { current_path: Option<String> },
     SwitchTab { tab: Tab },
     Write { row: usize, ink: Ink },
     Erase { row: usize, ink: Ink },
@@ -64,14 +68,11 @@ struct EditChar {
     rendered: Option<TextFragment>,
 }
 
-// TODO: split out the margin widths.
 #[derive(Hash, Clone)]
 pub struct Metrics {
     height: i32,
     width: i32,
     baseline: i32,
-    rows: usize,
-    cols: usize,
 }
 
 impl Metrics {
@@ -81,15 +82,10 @@ impl Metrics {
         let h_metrics = FONT.glyph(' ').scaled(scale).h_metrics();
         let width = h_metrics.advance_width.ceil() as i32;
 
-        let rows = (SCREEN_HEIGHT - TOP_MARGIN * 2) / height;
-        let cols = (SCREEN_WIDTH - LEFT_MARGIN * 2) / width;
-
         Metrics {
             height,
             width,
             baseline: v_metrics.ascent as i32 + 1,
-            rows: rows as usize,
-            cols: cols as usize,
         }
     }
 }
@@ -129,6 +125,7 @@ impl Default for Selection {
 #[derive(Clone)]
 pub struct TextWindow {
     buffer: TextBuffer,
+    atlas: Rc<Atlas>,
     grid_metrics: Metrics,
     selection: Selection,
     dimensions: Coord,
@@ -136,9 +133,15 @@ pub struct TextWindow {
 }
 
 impl TextWindow {
-    fn new(buffer: TextBuffer, metrics: Metrics, dimensions: Coord) -> TextWindow {
+    fn new(
+        buffer: TextBuffer,
+        atlas: Rc<Atlas>,
+        metrics: Metrics,
+        dimensions: Coord,
+    ) -> TextWindow {
         TextWindow {
             buffer,
+            atlas,
             grid_metrics: metrics,
             selection: Selection::Normal,
             dimensions,
@@ -148,8 +151,14 @@ impl TextWindow {
 
     fn page_relative(&mut self, (row_d, col_d): (isize, isize)) {
         let (row, col) = &mut self.origin;
-        *row = (*row as isize + row_d * self.dimensions.0 as isize).max(0) as usize;
-        *col = (*col as isize + col_d * self.dimensions.1 as isize).max(0) as usize;
+        fn page_round(current: usize, delta: isize, size: usize) -> usize {
+            // It's useful to stride less than a whole page, to preserve some context.
+            // This is probably not quite the right number for "mid-size" panes...
+            let stride = (size as isize - 5).max(1);
+            (current as isize + delta * stride).max(0) as usize
+        }
+        *row = page_round(*row, row_d, self.dimensions.0);
+        *col = page_round(*col, col_d, self.dimensions.1);
     }
 
     pub fn write(&mut self, coord: Coord, c: char) {
@@ -279,6 +288,126 @@ impl TextWindow {
     }
 }
 
+pub enum TextMessage {
+    Write(usize, Ink),
+}
+
+// The width of the padding we put around a drawn grid. May or may not be coloured in.
+const GRID_BORDER: i32 = 4;
+
+impl Widget for TextWindow {
+    type Message = TextMessage;
+
+    fn size(&self) -> Vector2<i32> {
+        let (rows, cols) = self.dimensions;
+        let width = self.grid_metrics.width * cols as i32 + GRID_BORDER * 2;
+        let height = self.grid_metrics.height * rows as i32 + GRID_BORDER * 2;
+        Vector2::new(width, height)
+    }
+
+    fn render(&self, view: View<Self::Message>) {
+        let (row_origin, col_origin) = self.origin;
+        draw_grid(
+            view,
+            &self.grid_metrics,
+            self.dimensions,
+            |row_offset, view| {
+                let row = row_origin + row_offset;
+                view.handlers()
+                    .map_region(|mut r| {
+                        r.top_left.x -= GRID_BORDER;
+                        r
+                    })
+                    .on_ink(|i| TextMessage::Write(row, i));
+            },
+            |row_offset, col_offset, mut view| {
+                let row = row_origin + row_offset;
+                let col = col_origin + col_offset;
+                let coord = (row, col);
+                let char = self.buffer.contents.get(row).and_then(|r| r.get(col));
+                let insert_area = match &self.selection {
+                    Selection::Normal => false,
+                    Selection::Single { carat } => {
+                        if coord == carat.coord {
+                            view.annotate(&carat.ink);
+                        }
+                        coord >= carat.coord
+                    }
+                    Selection::Range { start, end } => {
+                        if coord == start.coord {
+                            view.annotate(&start.ink);
+                        }
+                        if coord == end.coord {
+                            view.annotate(&end.ink);
+                        }
+                        coord >= start.coord && coord < end.coord
+                    }
+                };
+                let fragment = self.atlas.get_cell(char.copied(), insert_area);
+                view.draw(&*fragment);
+            },
+        );
+    }
+}
+
+fn draw_grid<T>(
+    mut view: View<T>,
+    metrics: &Metrics,
+    dimensions: Coord,
+    mut on_row: impl FnMut(usize, &mut View<T>),
+    mut draw_cell: impl FnMut(usize, usize, View<T>),
+) {
+    let (rows, cols) = dimensions;
+    // TODO: fit to space provided?
+    const LEFT_MARGIN_BORDER: i32 = 4;
+    const MARGIN_BORDER: i32 = 2;
+
+    // TODO: put this in armrest
+    let height = rows as i32 * metrics.height + GRID_BORDER * 2;
+    let width = cols as i32 * metrics.width + GRID_BORDER * 2;
+    let remaining = view.size();
+    view.split_off(Side::Right, (remaining.x - width).max(0));
+    view.split_off(Side::Bottom, (remaining.y - height).max(0));
+
+    // let view = view.split_off(Side::Left, cols as usize * metrics.width + GRID_BORDER * 2);
+    view.split_off(Side::Top, GRID_BORDER).draw(&Border {
+        side: Side::Bottom,
+        width: MARGIN_BORDER,
+        color: 100,
+        start_offset: GRID_BORDER - LEFT_MARGIN_BORDER,
+        end_offset: GRID_BORDER - MARGIN_BORDER,
+    });
+    view.split_off(Side::Bottom, GRID_BORDER).draw(&Border {
+        side: Side::Top,
+        width: MARGIN_BORDER,
+        color: 100,
+        start_offset: GRID_BORDER - LEFT_MARGIN_BORDER,
+        end_offset: GRID_BORDER - MARGIN_BORDER,
+    });
+    view.split_off(Side::Left, GRID_BORDER).draw(&Border {
+        side: Side::Right,
+        width: LEFT_MARGIN_BORDER,
+        color: 100,
+        start_offset: 0,
+        end_offset: 0,
+    });
+    view.split_off(Side::Right, GRID_BORDER).draw(&Border {
+        side: Side::Left,
+        width: MARGIN_BORDER,
+        color: 100,
+        start_offset: 0,
+        end_offset: 0,
+    });
+    for row in 0..rows {
+        let mut line_view = view.split_off(Side::Top, metrics.height);
+        on_row(row, &mut line_view);
+        for col in 0..cols {
+            let char_view = line_view.split_off(Side::Left, metrics.width);
+            draw_cell(row, col, char_view);
+        }
+    }
+}
+
 /// This stores data from a recent recognition attempt, and the number of times it was overwritten
 /// within the window we maintain. Idea being, if we have to go back and rewrite a char just after
 /// we wrote it, we probably guessed wrong and should use it as a template.
@@ -302,6 +431,8 @@ struct Editor {
     metrics: Metrics,
 
     error_string: String,
+
+    atlas: Rc<Atlas>,
 
     // tabs
     tab: Tab,
@@ -365,63 +496,7 @@ impl Editor {
     }
 
     fn right_margin(&self) -> i32 {
-        SCREEN_WIDTH - LEFT_MARGIN - self.metrics.cols as i32 * self.metrics.width
-    }
-
-    fn draw_grid(
-        &self,
-        view: &mut View<Msg>,
-        rows: usize,
-        row_offset: usize,
-        col_offset: usize,
-        mut draw_label: impl FnMut(usize, View<Msg>),
-        mut draw_cell: impl FnMut(usize, usize, View<Msg>),
-    ) {
-        const LEFT_MARGIN_BORDER: i32 = 4;
-        const MARGIN_BORDER: i32 = 2;
-        view.split_off(Side::Top, 2).draw(&Border {
-            side: Side::Bottom,
-            width: MARGIN_BORDER,
-            color: 100,
-            start_offset: self.left_margin() - LEFT_MARGIN_BORDER,
-            end_offset: self.right_margin() - MARGIN_BORDER,
-        });
-        for row in row_offset..(row_offset + rows) {
-            let mut line_view = view.split_off(Side::Top, self.metrics.height);
-            let mut margin_view = line_view.split_off(Side::Left, LEFT_MARGIN);
-            margin_view
-                .split_off(Side::Right, LEFT_MARGIN_BORDER)
-                .draw(&Border {
-                    side: Side::Right,
-                    width: LEFT_MARGIN_BORDER,
-                    color: 100,
-                    start_offset: 0,
-                    end_offset: 0,
-                });
-            draw_label(row, margin_view);
-            line_view
-                .handlers()
-                // .pad(10)
-                .on_ink(|ink| Msg::Write { row, ink });
-            for col in (0..self.metrics.cols).map(|c| c + col_offset) {
-                let char_view = line_view.split_off(Side::Left, self.metrics.width);
-                draw_cell(row, col, char_view);
-            }
-            line_view.draw(&Border {
-                side: Side::Left,
-                width: MARGIN_BORDER,
-                start_offset: 0,
-                end_offset: 0,
-                color: 100,
-            });
-        }
-        view.split_off(Side::Top, 2).draw(&Border {
-            side: Side::Top,
-            width: MARGIN_BORDER,
-            color: 100,
-            start_offset: self.left_margin() - LEFT_MARGIN_BORDER,
-            end_offset: self.right_margin() - MARGIN_BORDER,
-        });
+        SCREEN_WIDTH - LEFT_MARGIN - self.text.size().x
     }
 
     pub fn report_error<A, E: Display>(&mut self, result: Result<A, E>) -> Option<A> {
@@ -497,6 +572,28 @@ fn fragment_at(
     })
 }
 
+impl Editor {
+    fn load_meta(&self, path: Option<String>) -> Tab {
+        let path = path
+            .map(Cow::Owned)
+            .or(env::var("HOME").ok().map(|mut s| {
+                // HOME often doesn't have a trailing slash, but multiples are OK.
+                s.push('/');
+                Cow::Owned(s)
+            }))
+            .unwrap_or(Cow::Borrowed("/"));
+        Tab::Meta {
+            path_window: TextWindow::new(
+                TextBuffer::from_string(&path),
+                self.atlas.clone(),
+                self.metrics.clone(),
+                (1, self.max_dimensions().1),
+            ),
+            suggested: suggestions(&path).unwrap_or_default(),
+        }
+    }
+}
+
 impl Widget for Editor {
     type Message = Msg;
 
@@ -520,26 +617,13 @@ impl Widget for Editor {
                     .as_ref()
                     .map(|p| p.to_string_lossy())
                     .unwrap_or(Cow::Borrowed("unnamed file"));
-                let path = self
-                    .path
-                    .as_ref()
-                    .map(|f| f.to_string_lossy())
-                    .or(env::var("HOME").ok().map(|mut s| {
-                        // HOME often doesn't have a trailing slash, but multiples are OK.
-                        s.push('/');
-                        Cow::Owned(s)
-                    }))
-                    .unwrap_or(Cow::Borrowed("/"));
+
                 let path_text = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT)
-                    .message(Msg::SwitchTab {
-                        tab: Tab::Meta {
-                            path_window: TextWindow::new(
-                                TextBuffer::from_string(&path),
-                                self.metrics.clone(),
-                                (1, self.metrics.cols),
-                            ),
-                            suggested: suggestions(&path).unwrap_or_default(),
-                        },
+                    .message(Msg::SwitchToMeta {
+                        current_path: self
+                            .path
+                            .as_ref()
+                            .and_then(|p| p.to_str().map(String::from)),
                     })
                     .literal(&path_str)
                     .into_text();
@@ -576,43 +660,15 @@ impl Widget for Editor {
                 path_window,
                 suggested,
             } => {
-                self.draw_grid(
-                    &mut view,
-                    path_window.dimensions.0,
-                    path_window.origin.0,
-                    path_window.origin.1,
-                    |_n, _v| {},
-                    |row, col, mut char_view| {
-                        let coord = (row, col);
-                        let ch = path_window.fragment(coord);
-                        let insert_area = match &path_window.selection {
-                            Selection::Normal => false,
-                            Selection::Single { carat } => {
-                                if coord == carat.coord {
-                                    char_view.annotate(&carat.ink);
-                                }
-                                coord >= carat.coord
-                            }
-                            Selection::Range { start, end } => {
-                                if coord == start.coord {
-                                    char_view.annotate(&start.ink);
-                                }
-                                if coord == end.coord {
-                                    char_view.annotate(&end.ink);
-                                }
-                                coord >= start.coord && coord < end.coord
-                            }
-                        };
-                        let grid = GridCell {
-                            baseline: self.metrics.baseline,
-                            char: ch,
-                            insert_area,
-                        };
-                        char_view.draw(&grid);
-                    },
-                );
-
                 view.split_off(Side::Left, self.left_margin());
+
+                path_window
+                    .borrow()
+                    .map(|message| match message {
+                        TextMessage::Write(row, ink) => Msg::Write { row, ink },
+                    })
+                    .render_split(&mut view, Side::Top, 0.0);
+
                 view.split_off(Side::Right, self.right_margin());
                 let mut buttons = view.split_off(Side::Top, TOP_MARGIN);
 
@@ -631,54 +687,50 @@ impl Widget for Editor {
                 buttons.leave_rest_blank();
 
                 for s in suggested {
-                    let mut suggest_view = view.split_off(Side::Top, self.metrics.height);
-                    button("open", Msg::Open { path: s.clone() }, s.is_file()).render_split(
+                    let mut suggest_view = view.split_off(Side::Top, self.metrics.height * 2);
+                    let path_string = if s.is_dir() {
+                        let mut owned = s.to_string_lossy().into_owned();
+                        owned.push('/');
+                        owned.into()
+                    } else {
+                        s.to_string_lossy()
+                    };
+
+                    let msg = if s.is_file() {
+                        Msg::Open { path: s.clone() }
+                    } else {
+                        Msg::SwitchToMeta {
+                            current_path: Some(path_string.to_string()),
+                        }
+                    };
+
+                    button("open", msg, s.exists()).render_split(
                         &mut suggest_view,
                         Side::Right,
                         0.5,
                     );
-                    suggest_view.draw(&font::text_literal(
-                        self.metrics.height,
-                        &s.to_string_lossy(),
-                    ));
+                    suggest_view.draw(&font::text_literal(self.metrics.height, &path_string));
                 }
             }
             Tab::Edit => {
-                self.draw_grid(
-                    &mut view,
-                    self.text.dimensions.0,
-                    self.text.origin.0,
-                    self.text.origin.1,
-                    |_n, _v| {},
-                    |row, col, mut char_view| {
-                        let coord = (row, col);
-                        let ch = self.text.fragment(coord);
-                        let insert_area = match &self.text.selection {
-                            Selection::Normal => false,
-                            Selection::Single { carat } => {
-                                if coord == carat.coord {
-                                    char_view.annotate(&carat.ink);
-                                }
-                                coord >= carat.coord
-                            }
-                            Selection::Range { start, end } => {
-                                if coord == start.coord {
-                                    char_view.annotate(&start.ink);
-                                }
-                                if coord == end.coord {
-                                    char_view.annotate(&end.ink);
-                                }
-                                coord >= start.coord && coord < end.coord
-                            }
-                        };
-                        let grid = GridCell {
-                            baseline: self.metrics.baseline,
-                            char: ch,
-                            insert_area,
-                        };
-                        char_view.draw(&grid);
-                    },
-                );
+                // Run the line numbers down the margin!
+                let mut margin_view = view.split_off(Side::Left, self.left_margin());
+                let margin_placement = self.metrics.baseline as f32 / self.metrics.height as f32;
+                for row in (self.text.origin.0..).take(self.text.dimensions.0) {
+                    let mut view = margin_view.split_off(Side::Top, self.text.grid_metrics.height);
+                    view.split_off(Side::Right, 20);
+                    let text = Text::literal(30, &*FONT, &format!("{}", row));
+                    text.render_placed(view, 1.0, margin_placement);
+                }
+                margin_view.leave_rest_blank();
+
+                self.text
+                    .borrow()
+                    .map(|message| match message {
+                        TextMessage::Write(row, ink) => Msg::Write { row, ink },
+                    })
+                    .render_split(&mut view, Side::Top, 0.0);
+
                 let text = Text::literal(
                     DEFAULT_CHAR_HEIGHT,
                     &*FONT,
@@ -687,25 +739,32 @@ impl Widget for Editor {
                         self.text.origin.0, self.text.origin.1, self.error_string
                     ),
                 );
-                text.render_placed(view, 0.5, 0.5);
+                text.render_placed(view, 0.0, 0.4);
             }
             Tab::Template => {
-                self.draw_grid(
-                    &mut view,
-                    self.metrics.rows,
-                    self.template_offset,
-                    0,
-                    |row, label_view| {
-                        if let Some(templates) = self.text_stuff.templates.get(row) {
-                            let char_text = Text::literal(
-                                self.metrics.height,
-                                &*FONT,
-                                &format!("{} ", templates.char),
-                            );
-                            char_text.render_placed(label_view, 1.0, 0.0);
-                        }
-                    },
+                let mut margin_view = view.split_off(Side::Left, self.left_margin());
+                let margin_placement = self.metrics.baseline as f32 / self.metrics.height as f32;
+                for ct in self.text_stuff.templates[self.template_offset..]
+                    .iter()
+                    .take(self.max_dimensions().0)
+                {
+                    let mut view = margin_view.split_off(Side::Top, self.text.grid_metrics.height);
+                    view.split_off(Side::Right, 20);
+                    let text = Text::literal(30, &*FONT, &format!("{}", ct.char));
+                    text.render_placed(view, 1.0, margin_placement);
+                }
+                margin_view.leave_rest_blank();
+
+                let (height, width) = self.max_dimensions();
+                let height = height.min(self.text_stuff.templates.len() - self.template_offset);
+
+                draw_grid(
+                    view,
+                    &self.metrics,
+                    (height, width),
+                    |_, _| {},
                     |row, col, mut template_view| {
+                        let row = self.template_offset + row;
                         let maybe_char = self.text_stuff.templates.get(row);
                         let grid = GridCell {
                             baseline: self.metrics.baseline,
@@ -883,6 +942,7 @@ impl InkType {
 }
 
 const NUM_SUGGESTIONS: usize = 16;
+const MAX_DIR_ENTRIES: usize = 1024;
 
 fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
     if !current_path.starts_with('/') {
@@ -892,7 +952,7 @@ fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
     let (dir, file) = current_path.rsplit_once('/').expect("splitting /path by /");
     let dir = if dir.is_empty() { "/" } else { dir };
     let read = fs::read_dir(dir)?;
-    let results = read
+    let mut results: Vec<_> = read
         .filter_map(|r| r.ok())
         .filter_map(|de| {
             de.file_name()
@@ -900,12 +960,27 @@ fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
                 .filter(|s| s.starts_with(file))
                 .map(|_| de.path())
         })
-        .take(NUM_SUGGESTIONS)
+        .take(MAX_DIR_ENTRIES)
         .collect();
+
+    // NB: if this is slow, pull in the partial sort crate.
+    results.sort();
+    results.truncate(NUM_SUGGESTIONS);
+
     Ok(results)
 }
 
+fn max_dimensions(metrics: &Metrics) -> Coord {
+    let rows = (SCREEN_HEIGHT - TOP_MARGIN * 2) / metrics.height;
+    let cols = (SCREEN_WIDTH - LEFT_MARGIN * 2) / metrics.width;
+    (rows as usize, cols as usize)
+}
+
 impl Editor {
+    fn max_dimensions(&self) -> Coord {
+        max_dimensions(&self.metrics)
+    }
+
     fn update_path_from_meta(&mut self) {
         if let Tab::Meta { path_window, .. } = &mut self.tab {
             let path_string = path_window.buffer.content_string();
@@ -999,15 +1074,18 @@ impl Applet for Editor {
                     };
                     self.text.page_relative(movement);
                 }
-                Tab::Template => match towards {
-                    Side::Top => {
-                        self.template_offset += self.metrics.rows - 1;
+                Tab::Template => {
+                    let (rows, _) = self.max_dimensions();
+                    match towards {
+                        Side::Top => {
+                            self.template_offset += rows - 1;
+                        }
+                        Side::Bottom => {
+                            self.template_offset -= (rows - 1).min(self.template_offset);
+                        }
+                        _ => {}
                     }
-                    Side::Bottom => {
-                        self.template_offset -= (self.metrics.rows - 1).min(self.template_offset);
-                    }
-                    _ => {}
-                },
+                }
                 Tab::Meta { .. } => {
                     // Nothing to swipe here!
                 }
@@ -1016,8 +1094,9 @@ impl Applet for Editor {
                 if let Some(file_contents) = self.report_error(fs::read_to_string(&path)) {
                     self.text = TextWindow::new(
                         TextBuffer::from_string(&file_contents),
+                        self.atlas.clone(),
                         self.metrics.clone(),
-                        (self.metrics.rows, self.metrics.cols),
+                        self.max_dimensions(),
                     );
                     self.path = Some(path);
                     self.tab = Tab::Edit;
@@ -1032,8 +1111,9 @@ impl Applet for Editor {
                 self.update_path_from_meta();
                 self.text = TextWindow::new(
                     TextBuffer::empty(),
+                    self.atlas.clone(),
                     self.metrics.clone(),
-                    (self.metrics.rows, self.metrics.cols),
+                    self.max_dimensions(),
                 );
             }
             Msg::Save => {
@@ -1044,6 +1124,9 @@ impl Applet for Editor {
                     }
                     self.report_error(write_result);
                 }
+            }
+            Msg::SwitchToMeta { current_path } => {
+                self.tab = self.load_meta(current_path);
             }
         }
 
@@ -1082,13 +1165,16 @@ fn main() {
 
     let metrics = Metrics::new(DEFAULT_CHAR_HEIGHT);
 
-    let dimensions = (metrics.rows, metrics.cols);
+    let dimensions = max_dimensions(&metrics);
+
+    let atlas = Rc::new(Atlas::new(1.0, metrics.clone()));
 
     let mut widget = Editor {
         path: None,
         template_path,
         metrics: metrics.clone(),
         error_string: "".to_string(),
+        atlas: atlas.clone(),
         tab: Tab::Edit,
         template_offset: 0,
         text_stuff: TextStuff {
@@ -1098,7 +1184,12 @@ fn main() {
             tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
             clipboard: None,
         },
-        text: TextWindow::new(TextBuffer::from_string(&file_string), metrics, dimensions),
+        text: TextWindow::new(
+            TextBuffer::from_string(&file_string),
+            atlas,
+            metrics,
+            dimensions,
+        ),
         dirty: false,
     };
 
