@@ -21,7 +21,6 @@ use armrest::ui::canvas::Fragment;
 use armrest::ui::{Side, Text, TextFragment, View, Widget};
 use clap::Arg;
 use once_cell::sync::Lazy;
-use rusttype::Scale;
 
 use xdg::BaseDirectories;
 
@@ -66,28 +65,6 @@ pub enum Msg {
 struct EditChar {
     value: char,
     rendered: Option<TextFragment>,
-}
-
-#[derive(Hash, Clone)]
-pub struct Metrics {
-    height: i32,
-    width: i32,
-    baseline: i32,
-}
-
-impl Metrics {
-    fn new(height: i32) -> Metrics {
-        let scale = Scale::uniform(height as f32);
-        let v_metrics = FONT.v_metrics(scale);
-        let h_metrics = FONT.glyph(' ').scaled(scale).h_metrics();
-        let width = h_metrics.advance_width.ceil() as i32;
-
-        Metrics {
-            height,
-            width,
-            baseline: v_metrics.ascent as i32 + 1,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -188,7 +165,6 @@ impl TextWindow {
         fragment_at(&self.buffer, coord, &self.grid_metrics)
     }
 
-    // TODO: would be nice to enwidgetize all this!
     fn ink_row(&mut self, ink: Ink, row: usize, text_stuff: &mut TextStuff) {
         let ink_type = InkType::classify(&self.grid_metrics, ink);
         match ink_type {
@@ -292,9 +268,6 @@ pub enum TextMessage {
     Write(usize, Ink),
 }
 
-// The width of the padding we put around a drawn grid. May or may not be coloured in.
-const GRID_BORDER: i32 = 4;
-
 impl Widget for TextWindow {
     type Message = TextMessage;
 
@@ -324,8 +297,8 @@ impl Widget for TextWindow {
                 let row = row_origin + row_offset;
                 let col = col_origin + col_offset;
                 let coord = (row, col);
-                let char = self.buffer.contents.get(row).and_then(|r| r.get(col));
-                let insert_area = match &self.selection {
+
+                let is_selected = match &self.selection {
                     Selection::Normal => false,
                     Selection::Single { carat } => {
                         if coord == carat.coord {
@@ -343,68 +316,27 @@ impl Widget for TextWindow {
                         coord >= start.coord && coord < end.coord
                     }
                 };
-                let fragment = self.atlas.get_cell(char.copied(), insert_area);
+
+                let line = self.buffer.contents.get(row);
+                let (char, background) = line
+                    .map(|l| match col.cmp(&l.len()) {
+                        Ordering::Less => (l.get(col).copied(), false),
+                        Ordering::Equal => {
+                            let char = if row + 1 == self.buffer.contents.len() {
+                                '⌧'
+                            } else {
+                                '⏎'
+                            };
+                            (Some(char), true)
+                        }
+                        _ => (None, false),
+                    })
+                    .unwrap_or((None, false));
+
+                let fragment = self.atlas.get_cell(char, is_selected, background);
                 view.draw(&*fragment);
             },
         );
-    }
-}
-
-fn draw_grid<T>(
-    mut view: View<T>,
-    metrics: &Metrics,
-    dimensions: Coord,
-    mut on_row: impl FnMut(usize, &mut View<T>),
-    mut draw_cell: impl FnMut(usize, usize, View<T>),
-) {
-    let (rows, cols) = dimensions;
-    // TODO: fit to space provided?
-    const LEFT_MARGIN_BORDER: i32 = 4;
-    const MARGIN_BORDER: i32 = 2;
-
-    // TODO: put this in armrest
-    let height = rows as i32 * metrics.height + GRID_BORDER * 2;
-    let width = cols as i32 * metrics.width + GRID_BORDER * 2;
-    let remaining = view.size();
-    view.split_off(Side::Right, (remaining.x - width).max(0));
-    view.split_off(Side::Bottom, (remaining.y - height).max(0));
-
-    // let view = view.split_off(Side::Left, cols as usize * metrics.width + GRID_BORDER * 2);
-    view.split_off(Side::Top, GRID_BORDER).draw(&Border {
-        side: Side::Bottom,
-        width: MARGIN_BORDER,
-        color: 100,
-        start_offset: GRID_BORDER - LEFT_MARGIN_BORDER,
-        end_offset: GRID_BORDER - MARGIN_BORDER,
-    });
-    view.split_off(Side::Bottom, GRID_BORDER).draw(&Border {
-        side: Side::Top,
-        width: MARGIN_BORDER,
-        color: 100,
-        start_offset: GRID_BORDER - LEFT_MARGIN_BORDER,
-        end_offset: GRID_BORDER - MARGIN_BORDER,
-    });
-    view.split_off(Side::Left, GRID_BORDER).draw(&Border {
-        side: Side::Right,
-        width: LEFT_MARGIN_BORDER,
-        color: 100,
-        start_offset: 0,
-        end_offset: 0,
-    });
-    view.split_off(Side::Right, GRID_BORDER).draw(&Border {
-        side: Side::Left,
-        width: MARGIN_BORDER,
-        color: 100,
-        start_offset: 0,
-        end_offset: 0,
-    });
-    for row in 0..rows {
-        let mut line_view = view.split_off(Side::Top, metrics.height);
-        on_row(row, &mut line_view);
-        for col in 0..cols {
-            let char_view = line_view.split_off(Side::Left, metrics.width);
-            draw_cell(row, col, char_view);
-        }
     }
 }
 
@@ -762,25 +694,27 @@ impl Widget for Editor {
                     view,
                     &self.metrics,
                     (height, width),
-                    |_, _| {},
+                    |row, view| {
+                        let row = row + self.template_offset;
+                        view.handlers()
+                            .map_region(|mut r| {
+                                r.top_left.x -= GRID_BORDER;
+                                r
+                            })
+                            .on_ink(|ink| Msg::Write { row, ink });
+                    },
                     |row, col, mut template_view| {
                         let row = self.template_offset + row;
                         let maybe_char = self.text_stuff.templates.get(row);
-                        let grid = GridCell {
-                            baseline: self.metrics.baseline,
-                            // char: None,
-                            char: maybe_char.map(|char_data| {
-                                font::text_literal(self.metrics.height, &char_data.char.to_string())
-                                    .with_weight(0.2)
-                            }),
-                            insert_area: false,
-                        };
+                        let grid = self
+                            .atlas
+                            .get_cell(maybe_char.map(|ct| ct.char), false, true);
                         if let Some(char_data) = maybe_char {
                             if let Some(template) = char_data.templates.get(col) {
                                 template_view.annotate(&template.ink);
                             }
                         }
-                        template_view.draw(&grid);
+                        template_view.draw(&*grid);
                     },
                 );
             }
@@ -1132,6 +1066,14 @@ impl Applet for Editor {
 
         None
     }
+
+    fn current_route(&self) -> &str {
+        match self.tab {
+            Tab::Meta { .. } => "meta",
+            Tab::Edit => "edit",
+            Tab::Template => "template",
+        }
+    }
 }
 
 fn button(text: &str, msg: Msg, active: bool) -> Text<Msg> {
@@ -1167,7 +1109,7 @@ fn main() {
 
     let dimensions = max_dimensions(&metrics);
 
-    let atlas = Rc::new(Atlas::new(1.0, metrics.clone()));
+    let atlas = Rc::new(Atlas::new(metrics.clone()));
 
     let mut widget = Editor {
         path: None,

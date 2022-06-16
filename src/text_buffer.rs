@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 type Coord = (usize, usize);
 
 #[derive(Clone)]
