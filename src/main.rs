@@ -96,6 +96,7 @@ pub struct TextWindow {
     selection: Selection,
     dimensions: Coord,
     origin: Coord,
+    tentative_recognitions: VecDeque<Recognition>,
 }
 
 impl TextWindow {
@@ -112,6 +113,7 @@ impl TextWindow {
             selection: Selection::Normal,
             dimensions,
             origin: (0, 0),
+            tentative_recognitions: VecDeque::new(),
         }
     }
 
@@ -150,13 +152,49 @@ impl TextWindow {
         };
     }
 
+    /// Our character recognizer is extremely fallible. To help improve it, we
+    /// track the last few recognitions in a buffer. If we have to overwrite a
+    /// recent recognition within the buffer window, we assume that the old ink
+    /// should actually have been recognized as the new character. This helps
+    /// bootstrap the template database; though it's still necessary to go look
+    /// at the templates every once in a while and prune useless or incorrect
+    /// ones.
+    pub fn record_recognition(
+        &mut self,
+        coord: Coord,
+        ink: Ink,
+        best_char: char,
+    ) -> Option<Recognition> {
+        for r in &mut self.tentative_recognitions {
+            // Assume we got it wrong the first time!
+            if r.coord == coord {
+                r.best_char = best_char;
+                r.overwrites += 1;
+            }
+        }
+
+        self.tentative_recognitions.push_back(Recognition {
+            coord,
+            ink,
+            best_char,
+            overwrites: 0,
+        });
+
+        if self.tentative_recognitions.len() > NUM_RECENT_RECOGNITIONS {
+            self.tentative_recognitions.pop_front()
+        } else {
+            None
+        }
+    }
+
     fn ink_row(&mut self, ink: Ink, row: usize, text_stuff: &mut TextStuff) {
         let ink_type = InkType::classify(&self.grid_metrics, ink);
         match ink_type {
             InkType::Scratch { col } => {
                 let col = self.origin.1 + col;
                 self.write((row, col), ' ');
-                text_stuff.tentative_recognitions.clear();
+                self.tentative_recognitions
+                    .retain(|r| r.coord != (row, col));
             }
             InkType::Glyphs { tokens } => {
                 if matches!(self.selection, Selection::Normal) {
@@ -167,7 +205,17 @@ impl TextWindow {
                             .best_match(&ink_to_points(&ink, &self.grid_metrics), f32::MAX)
                         {
                             self.write((row, col), c);
-                            text_stuff.record_recognition((row, col), ink, c);
+                            if let Some(r) = self.record_recognition((row, col), ink, c) {
+                                if r.overwrites > 0 {
+                                    if let Some(t) = text_stuff
+                                        .templates
+                                        .iter_mut()
+                                        .find(|c| c.char == r.best_char)
+                                    {
+                                        t.templates.push(Template::from_ink(r.ink));
+                                    }
+                                }
+                            }
                         }
                     }
                 } else {
@@ -182,6 +230,8 @@ impl TextWindow {
                                 let selection = self.buffer.split_off(start.coord);
                                 text_stuff.clipboard = Some(selection);
                                 self.buffer.append(trailing);
+                                self.tentative_recognitions
+                                    .retain(|r| r.coord < start.coord);
                             }
                             self.selection = Selection::Normal;
                         }
@@ -202,6 +252,8 @@ impl TextWindow {
                                     let trailing = self.buffer.split_off(carat.coord);
                                     self.buffer.append(buffer);
                                     self.buffer.append(trailing);
+                                    self.tentative_recognitions
+                                        .retain(|r| r.coord < carat.coord);
                                 }
                             }
                             self.selection = Selection::Normal;
@@ -223,6 +275,8 @@ impl TextWindow {
                                 }
                                 self.buffer
                                     .splice(start.coord, TextBuffer::from_string(&string));
+                                self.tentative_recognitions
+                                    .retain(|r| r.coord < start.coord);
                             }
                             self.selection = Selection::Normal;
                         }
@@ -234,7 +288,8 @@ impl TextWindow {
                 let start = self.origin.1 + start;
                 let end = self.origin.1 + end;
                 self.buffer.remove((row, start), (row, end));
-                text_stuff.tentative_recognitions.clear();
+                self.tentative_recognitions
+                    .retain(|r| r.coord < (row, start));
             }
             InkType::Carat { col, ink } => {
                 let col = self.origin.1 + col;
@@ -242,7 +297,6 @@ impl TextWindow {
                     coord: (row, col),
                     ink,
                 });
-                text_stuff.tentative_recognitions.clear();
             }
             InkType::Junk => {}
         };
@@ -328,7 +382,8 @@ impl Widget for TextWindow {
 /// This stores data from a recent recognition attempt, and the number of times it was overwritten
 /// within the window we maintain. Idea being, if we have to go back and rewrite a char just after
 /// we wrote it, we probably guessed wrong and should use it as a template.
-struct Recognition {
+#[derive(Clone)]
+pub struct Recognition {
     coord: Coord,
     ink: Ink,
     best_char: char,
@@ -339,8 +394,6 @@ struct TextStuff {
     templates: Vec<CharTemplates>,
     char_recognizer: CharRecognizer,
     big_recognizer: CharRecognizer,
-    // TODO: probably store this in TextWindow.
-    tentative_recognitions: VecDeque<Recognition>,
     clipboard: Option<TextBuffer>,
 }
 
@@ -422,46 +475,6 @@ impl Editor {
             Err(e) => {
                 self.error_string = format!("Error: {}", e);
                 None
-            }
-        }
-    }
-}
-
-impl TextStuff {
-    /// Our character recognizer is extremely fallible. To help improve it, we
-    /// track the last few recognitions in a buffer. If we have to overwrite a
-    /// recent recognition within the buffer window, we assume that the old ink
-    /// should actually have been recognized as the new character. This helps
-    /// bootstrap the template database; though it's still necessary to go look
-    /// at the templates every once in a while and prune useless or incorrect
-    /// ones.
-    pub fn record_recognition(&mut self, coord: Coord, ink: Ink, best_char: char) {
-        for r in &mut self.tentative_recognitions {
-            // Assume we got it wrong the first time!
-            if r.coord == coord {
-                r.best_char = best_char;
-                r.overwrites += 1;
-            }
-        }
-
-        self.tentative_recognitions.push_back(Recognition {
-            coord,
-            ink,
-            best_char,
-            overwrites: 0,
-        });
-
-        while self.tentative_recognitions.len() > NUM_RECENT_RECOGNITIONS {
-            if let Some(r) = self.tentative_recognitions.pop_front() {
-                if r.overwrites > 0 {
-                    if let Some(t) = self.templates.iter_mut().find(|c| c.char == r.best_char) {
-                        t.templates.push(Template::from_ink(r.ink));
-                        // self.error_string = format!(
-                        //     "NB: saved template for char '{}' at coordinates {:?}",
-                        //     r.best_char, r.coord
-                        // );
-                    }
-                }
             }
         }
     }
@@ -998,7 +1011,6 @@ impl Applet for Editor {
                     self.path = Some(path);
                     self.tab = Tab::Edit;
                     self.dirty = false;
-                    self.text_stuff.tentative_recognitions.clear();
                 }
             }
             Msg::Rename => {
@@ -1086,7 +1098,6 @@ fn main() {
             templates: vec![],
             char_recognizer: CharRecognizer::new([]),
             big_recognizer: CharRecognizer::new([]),
-            tentative_recognitions: VecDeque::with_capacity(NUM_RECENT_RECOGNITIONS),
             clipboard: None,
         },
         text: TextWindow::new(
