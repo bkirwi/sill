@@ -1,11 +1,9 @@
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
-
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::ErrorKind;
-
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::{env, fs, io, mem};
@@ -13,15 +11,12 @@ use std::{env, fs, io, mem};
 use armrest::app;
 use armrest::app::{Applet, Component};
 use armrest::dollar::Points;
-
 use armrest::ink::Ink;
 use armrest::libremarkable::framebuffer::cgmath::Vector2;
 use armrest::libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
-use armrest::ui::canvas::Fragment;
-use armrest::ui::{Side, Text, TextFragment, View, Widget};
+use armrest::ui::{Side, Text, View, Widget};
 use clap::Arg;
 use once_cell::sync::Lazy;
-
 use xdg::BaseDirectories;
 
 use font::*;
@@ -59,12 +54,6 @@ pub enum Msg {
     Open { path: PathBuf },
     Rename,
     New,
-}
-
-#[derive(Hash, Clone)]
-struct EditChar {
-    value: char,
-    rendered: Option<TextFragment>,
 }
 
 #[derive(Clone)]
@@ -159,10 +148,6 @@ impl TextWindow {
                 Selection::Normal
             }
         };
-    }
-
-    fn fragment(&self, coord: Coord) -> Option<TextFragment> {
-        fragment_at(&self.buffer, coord, &self.grid_metrics)
     }
 
     fn ink_row(&mut self, ink: Ink, row: usize, text_stuff: &mut TextStuff) {
@@ -480,28 +465,6 @@ impl TextStuff {
             }
         }
     }
-}
-
-fn fragment_at(
-    buffer: &TextBuffer,
-    (row, col): (usize, usize),
-    metrics: &Metrics,
-) -> Option<TextFragment> {
-    let line = buffer.contents.get(row);
-    line.and_then(|l| match col.cmp(&l.len()) {
-        Ordering::Less => l
-            .get(col)
-            .map(|c| font::text_literal(metrics.height, &c.to_string()).with_weight(TEXT_WEIGHT)),
-        Ordering::Equal => {
-            let end_char = if row + 1 < buffer.contents.len() {
-                "⏎"
-            } else {
-                "⌧"
-            };
-            Some(font::text_literal(metrics.height, end_char).with_weight(0.5))
-        }
-        _ => None,
-    })
 }
 
 impl Editor {
