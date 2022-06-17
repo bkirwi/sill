@@ -397,6 +397,26 @@ struct TextStuff {
     clipboard: Option<TextBuffer>,
 }
 
+struct TextTab {
+    path: Option<PathBuf>,
+    text: TextWindow,
+    dirty: bool,
+}
+
+impl TextTab {
+    fn save(&mut self) -> io::Result<()> {
+        if let Some(path) = &self.path {
+            let write_result = std::fs::write(path, self.text.buffer.content_string());
+            if write_result.is_ok() {
+                self.dirty = false;
+            }
+            write_result
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct Editor {
     metrics: Metrics,
 
@@ -413,10 +433,7 @@ struct Editor {
 
     text_stuff: TextStuff,
 
-    // text editor stuff
-    path: Option<PathBuf>, // None if we haven't chosen a name yet.
-    text: TextWindow,
-    dirty: bool,
+    text_tab: TextTab,
 }
 
 impl TextStuff {
@@ -466,7 +483,7 @@ impl Editor {
     }
 
     fn right_margin(&self) -> i32 {
-        SCREEN_WIDTH - LEFT_MARGIN - self.text.size().x
+        SCREEN_WIDTH - LEFT_MARGIN - self.text_tab.text.size().x
     }
 
     pub fn report_error<A, E: Display>(&mut self, result: Result<A, E>) -> Option<A> {
@@ -521,6 +538,7 @@ impl Widget for Editor {
             }
             Tab::Edit => {
                 let path_str = self
+                    .text_tab
                     .path
                     .as_ref()
                     .map(|p| p.to_string_lossy())
@@ -529,6 +547,7 @@ impl Widget for Editor {
                 let path_text = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT)
                     .message(Msg::SwitchToMeta {
                         current_path: self
+                            .text_tab
                             .path
                             .as_ref()
                             .and_then(|p| p.to_str().map(String::from)),
@@ -540,11 +559,12 @@ impl Widget for Editor {
                     Side::Right,
                     0.5,
                 );
-                button("save", Msg::Save, self.path.is_some() && self.dirty).render_split(
-                    &mut header,
-                    Side::Right,
-                    0.5,
-                );
+                button(
+                    "save",
+                    Msg::Save,
+                    self.text_tab.path.is_some() && self.text_tab.dirty,
+                )
+                .render_split(&mut header, Side::Right, 0.5);
                 path_text.render_placed(header, 0.0, 0.5);
             }
             Tab::Template => {
@@ -624,15 +644,17 @@ impl Widget for Editor {
                 // Run the line numbers down the margin!
                 let mut margin_view = view.split_off(Side::Left, self.left_margin());
                 let margin_placement = self.metrics.baseline as f32 / self.metrics.height as f32;
-                for row in (self.text.origin.0..).take(self.text.dimensions.0) {
-                    let mut view = margin_view.split_off(Side::Top, self.text.grid_metrics.height);
+                for row in (self.text_tab.text.origin.0..).take(self.text_tab.text.dimensions.0) {
+                    let mut view =
+                        margin_view.split_off(Side::Top, self.text_tab.text.grid_metrics.height);
                     view.split_off(Side::Right, 20);
                     let text = Text::literal(30, &*FONT, &format!("{}", row));
                     text.render_placed(view, 1.0, margin_placement);
                 }
                 margin_view.leave_rest_blank();
 
-                self.text
+                self.text_tab
+                    .text
                     .borrow()
                     .map(|message| match message {
                         TextMessage::Write(row, ink) => Msg::Write { row, ink },
@@ -644,7 +666,7 @@ impl Widget for Editor {
                     &*FONT,
                     &format!(
                         "{}:{} [{}]",
-                        self.text.origin.0, self.text.origin.1, self.error_string
+                        self.text_tab.text.origin.0, self.text_tab.text.origin.1, self.error_string
                     ),
                 );
                 text.render_placed(view, 0.0, 0.4);
@@ -656,7 +678,8 @@ impl Widget for Editor {
                     .iter()
                     .take(self.max_dimensions().0)
                 {
-                    let mut view = margin_view.split_off(Side::Top, self.text.grid_metrics.height);
+                    let mut view =
+                        margin_view.split_off(Side::Top, self.text_tab.text.grid_metrics.height);
                     view.split_off(Side::Right, 20);
                     let text = Text::literal(30, &*FONT, &format!("{}", ct.char));
                     text.render_placed(view, 1.0, margin_placement);
@@ -895,9 +918,9 @@ impl Editor {
         if let Tab::Meta { path_window, .. } = &mut self.tab {
             let path_string = path_window.buffer.content_string();
             let path_buf = PathBuf::from(path_string);
-            if self.path.as_ref() != Some(&path_buf) {
-                self.path = Some(path_buf);
-                self.dirty = true;
+            if self.text_tab.path.as_ref() != Some(&path_buf) {
+                self.text_tab.path = Some(path_buf);
+                self.text_tab.dirty = true;
             }
             self.tab = Tab::Edit;
         }
@@ -926,8 +949,8 @@ impl Applet for Editor {
                         suggestions(&path_window.buffer.content_string()).unwrap_or_default();
                 }
                 Tab::Edit => {
-                    self.dirty = true;
-                    self.text.ink_row(ink, row, &mut self.text_stuff);
+                    self.text_tab.dirty = true;
+                    self.text_tab.text.ink_row(ink, row, &mut self.text_stuff);
                 }
                 Tab::Template => {
                     let ink_type = InkType::classify(&self.metrics, ink);
@@ -982,7 +1005,7 @@ impl Applet for Editor {
                         Side::Left => (0, 1),
                         Side::Right => (0, -1),
                     };
-                    self.text.page_relative(movement);
+                    self.text_tab.text.page_relative(movement);
                 }
                 Tab::Template => {
                     let (rows, _) = self.max_dimensions();
@@ -1002,15 +1025,17 @@ impl Applet for Editor {
             },
             Msg::Open { path } => {
                 if let Some(file_contents) = self.report_error(fs::read_to_string(&path)) {
-                    self.text = TextWindow::new(
-                        TextBuffer::from_string(&file_contents),
-                        self.atlas.clone(),
-                        self.metrics.clone(),
-                        self.max_dimensions(),
-                    );
-                    self.path = Some(path);
+                    self.text_tab = TextTab {
+                        path: Some(path),
+                        dirty: false,
+                        text: TextWindow::new(
+                            TextBuffer::from_string(&file_contents),
+                            self.atlas.clone(),
+                            self.metrics.clone(),
+                            self.max_dimensions(),
+                        ),
+                    };
                     self.tab = Tab::Edit;
-                    self.dirty = false;
                 }
             }
             Msg::Rename => {
@@ -1018,21 +1043,20 @@ impl Applet for Editor {
             }
             Msg::New => {
                 self.update_path_from_meta();
-                self.text = TextWindow::new(
-                    TextBuffer::empty(),
-                    self.atlas.clone(),
-                    self.metrics.clone(),
-                    self.max_dimensions(),
-                );
+                self.text_tab = TextTab {
+                    path: None,
+                    text: TextWindow::new(
+                        TextBuffer::empty(),
+                        self.atlas.clone(),
+                        self.metrics.clone(),
+                        self.max_dimensions(),
+                    ),
+                    dirty: false,
+                };
             }
             Msg::Save => {
-                if let Some(path) = &self.path {
-                    let write_result = std::fs::write(path, self.text.buffer.content_string());
-                    if write_result.is_ok() {
-                        self.dirty = false;
-                    }
-                    self.report_error(write_result);
-                }
+                let result = self.text_tab.save();
+                self.report_error(result);
             }
             Msg::SwitchToMeta { current_path } => {
                 self.tab = self.load_meta(current_path);
@@ -1087,7 +1111,6 @@ fn main() {
     let atlas = Rc::new(Atlas::new(metrics.clone()));
 
     let mut widget = Editor {
-        path: None,
         template_path,
         metrics: metrics.clone(),
         error_string: "".to_string(),
@@ -1100,13 +1123,16 @@ fn main() {
             big_recognizer: CharRecognizer::new([]),
             clipboard: None,
         },
-        text: TextWindow::new(
-            TextBuffer::from_string(&file_string),
-            atlas,
-            metrics,
-            dimensions,
-        ),
-        dirty: false,
+        text_tab: TextTab {
+            path: None,
+            text: TextWindow::new(
+                TextBuffer::from_string(&file_string),
+                atlas,
+                metrics,
+                dimensions,
+            ),
+            dirty: false,
+        },
     };
 
     let load_result = widget.load_templates();
