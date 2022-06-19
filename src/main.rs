@@ -1,6 +1,6 @@
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::ErrorKind;
@@ -12,9 +12,10 @@ use armrest::app;
 use armrest::app::{Applet, Component};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
+use armrest::libremarkable::cgmath::Zero;
 use armrest::libremarkable::framebuffer::cgmath::Vector2;
-use armrest::libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
-use armrest::ui::{Side, Text, View, Widget};
+use armrest::libremarkable::framebuffer::common::{color, DISPLAYHEIGHT, DISPLAYWIDTH};
+use armrest::ui::{Canvas, Fragment, Side, Text, View, Widget};
 use clap::Arg;
 use once_cell::sync::Lazy;
 use xdg::BaseDirectories;
@@ -50,9 +51,9 @@ pub enum Msg {
     Write { row: usize, ink: Ink },
     Erase { row: usize, ink: Ink },
     Swipe { towards: Side },
-    Save,
+    Save { id: usize },
     Open { path: PathBuf },
-    Rename,
+    SaveAs { id: usize, path: PathBuf },
     New,
 }
 
@@ -62,7 +63,9 @@ pub enum Tab {
         path_window: TextWindow,
         suggested: Vec<PathBuf>,
     },
-    Edit,
+    Edit {
+        id: usize,
+    },
     Template,
 }
 
@@ -313,7 +316,7 @@ impl Widget for TextWindow {
     fn size(&self) -> Vector2<i32> {
         let (rows, cols) = self.dimensions;
         let width = self.grid_metrics.width * cols as i32 + GRID_BORDER * 2;
-        let height = self.grid_metrics.height * rows as i32 + GRID_BORDER * 2;
+        let height = self.grid_metrics.height * rows as i32 + GRID_BORDER * 6;
         Vector2::new(width, height)
     }
 
@@ -433,7 +436,8 @@ struct Editor {
 
     text_stuff: TextStuff,
 
-    text_tab: TextTab,
+    next_tab_id: usize,
+    tabs: BTreeMap<usize, TextTab>,
 }
 
 impl TextStuff {
@@ -483,7 +487,7 @@ impl Editor {
     }
 
     fn right_margin(&self) -> i32 {
-        SCREEN_WIDTH - LEFT_MARGIN - self.text_tab.text.size().x
+        SCREEN_WIDTH - LEFT_MARGIN - 1200
     }
 
     pub fn report_error<A, E: Display>(&mut self, result: Result<A, E>) -> Option<A> {
@@ -533,46 +537,51 @@ impl Widget for Editor {
 
         match self.tab {
             Tab::Meta { .. } => {
-                let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, "Hi!");
+                let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, "armrest-edit v0.0.1");
                 head_text.render_placed(header, 0.0, 0.5);
             }
-            Tab::Edit => {
-                let path_str = self
-                    .text_tab
+            Tab::Edit { id } => {
+                let text_tab = self.tabs.get(&id).unwrap();
+                let path_str = text_tab
                     .path
                     .as_ref()
                     .map(|p| p.to_string_lossy())
-                    .unwrap_or(Cow::Borrowed("unnamed file"));
+                    .unwrap_or(Cow::Borrowed("<unnamed file>"));
 
-                let path_text = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT)
-                    .message(Msg::SwitchToMeta {
-                        current_path: self
-                            .text_tab
+                button(
+                    &path_str,
+                    Msg::SwitchToMeta {
+                        current_path: text_tab
                             .path
                             .as_ref()
                             .and_then(|p| p.to_str().map(String::from)),
-                    })
-                    .literal(&path_str)
-                    .into_text();
-                button("template", Msg::SwitchTab { tab: Tab::Template }, true).render_split(
-                    &mut header,
-                    Side::Right,
-                    0.5,
-                );
-                button(
-                    "save",
-                    Msg::Save,
-                    self.text_tab.path.is_some() && self.text_tab.dirty,
+                    },
+                    true,
                 )
-                .render_split(&mut header, Side::Right, 0.5);
-                path_text.render_placed(header, 0.0, 0.5);
+                .render_split(&mut header, Side::Left, 0.5);
+
+                Spaced(
+                    40,
+                    &[
+                        button(
+                            "save",
+                            Msg::Save { id },
+                            text_tab.path.is_some() && text_tab.dirty,
+                        ),
+                        button("template", Msg::SwitchTab { tab: Tab::Template }, true),
+                    ],
+                )
+                .render_placed(header, 1.0, 0.5);
             }
             Tab::Template => {
-                button("edit", Msg::SwitchTab { tab: Tab::Edit }, true).render_split(
-                    &mut header,
-                    Side::Right,
-                    0.5,
-                );
+                button(
+                    "edit",
+                    Msg::SwitchTab {
+                        tab: Tab::Edit { id: 0 },
+                    },
+                    true,
+                )
+                .render_split(&mut header, Side::Right, 0.5);
                 header.leave_rest_blank();
             }
         }
@@ -598,24 +607,65 @@ impl Widget for Editor {
                     .render_split(&mut view, Side::Top, 0.0);
 
                 view.split_off(Side::Right, self.right_margin());
+
+                let written_path: PathBuf = path_window.buffer.content_string().into();
+
                 let mut buttons = view.split_off(Side::Top, TOP_MARGIN);
 
-                for button in [
-                    button("back", Msg::SwitchTab { tab: Tab::Edit }, true),
-                    button("rename", Msg::Rename, true),
-                    // TODO: disable if exists?
-                    button("create", Msg::New, true),
-                ]
-                .into_iter()
-                .rev()
-                {
-                    button.render_split(&mut buttons, Side::Right, 0.5)
-                }
+                Spaced(40, &[button("create", Msg::New, true)]).render_split(
+                    &mut buttons,
+                    Side::Right,
+                    0.5,
+                );
 
                 buttons.leave_rest_blank();
 
+                let entry_height = self.metrics.height * 3 / 2;
+
+                Text::literal(self.metrics.height, &*FONT, "Tabs:").render_split(
+                    &mut view,
+                    Side::Top,
+                    0.0,
+                );
+
+                for (tab_id, tab) in &self.tabs {
+                    let path_str = tab
+                        .path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy())
+                        .unwrap_or(Cow::Borrowed("<unnamed file>"));
+                    let tab_label = button(
+                        &path_str,
+                        Msg::SwitchTab {
+                            tab: Tab::Edit { id: *tab_id },
+                        },
+                        true,
+                    );
+                    let mut tab_view = view.split_off(Side::Top, entry_height);
+                    tab_view.split_off(Side::Left, 20);
+                    tab_label.render_split(&mut tab_view, Side::Left, 0.5);
+
+                    button(
+                        "save as",
+                        Msg::SaveAs {
+                            id: *tab_id,
+                            path: written_path.clone(),
+                        },
+                        true,
+                    )
+                    .render_split(&mut tab_view, Side::Right, 0.5);
+                }
+
+                view.split_off(Side::Top, entry_height);
+
+                Text::literal(self.metrics.height, &*FONT, "Paths:").render_split(
+                    &mut view,
+                    Side::Top,
+                    0.0,
+                );
+
                 for s in suggested {
-                    let mut suggest_view = view.split_off(Side::Top, self.metrics.height * 2);
+                    let mut suggest_view = view.split_off(Side::Top, entry_height);
                     let path_string = if s.is_dir() {
                         let mut owned = s.to_string_lossy().into_owned();
                         owned.push('/');
@@ -632,28 +682,39 @@ impl Widget for Editor {
                         }
                     };
 
-                    button("open", msg, s.exists()).render_split(
+                    button(&path_string, msg, s.exists()).render_split(
                         &mut suggest_view,
-                        Side::Right,
+                        Side::Left,
                         0.5,
                     );
-                    suggest_view.draw(&font::text_literal(self.metrics.height, &path_string));
+
+                    button(
+                        "copy",
+                        Msg::SwitchToMeta {
+                            current_path: Some(path_string.to_string()),
+                        },
+                        true,
+                    )
+                    .render_split(&mut suggest_view, Side::Right, 0.5);
                 }
             }
-            Tab::Edit => {
+            Tab::Edit { id } => {
+                let text_tab = &self.tabs[&id];
                 // Run the line numbers down the margin!
                 let mut margin_view = view.split_off(Side::Left, self.left_margin());
-                let margin_placement = self.metrics.baseline as f32 / self.metrics.height as f32;
-                for row in (self.text_tab.text.origin.0..).take(self.text_tab.text.dimensions.0) {
+                margin_view.split_off(Side::Right, 20);
+                // Based on the top margin of the text area and the baseline height.
+                // TODO: calculate this from other metrics.
+                margin_view.split_off(Side::Top, 7);
+                for row in (text_tab.text.origin.0..).take(text_tab.text.dimensions.0) {
                     let mut view =
-                        margin_view.split_off(Side::Top, self.text_tab.text.grid_metrics.height);
-                    view.split_off(Side::Right, 20);
+                        margin_view.split_off(Side::Top, text_tab.text.grid_metrics.height);
                     let text = Text::literal(30, &*FONT, &format!("{}", row));
-                    text.render_placed(view, 1.0, margin_placement);
+                    text.render_placed(view, 1.0, 1.0);
                 }
                 margin_view.leave_rest_blank();
 
-                self.text_tab
+                text_tab
                     .text
                     .borrow()
                     .map(|message| match message {
@@ -666,7 +727,7 @@ impl Widget for Editor {
                     &*FONT,
                     &format!(
                         "{}:{} [{}]",
-                        self.text_tab.text.origin.0, self.text_tab.text.origin.1, self.error_string
+                        text_tab.text.origin.0, text_tab.text.origin.1, self.error_string
                     ),
                 );
                 text.render_placed(view, 0.0, 0.4);
@@ -678,8 +739,7 @@ impl Widget for Editor {
                     .iter()
                     .take(self.max_dimensions().0)
                 {
-                    let mut view =
-                        margin_view.split_off(Side::Top, self.text_tab.text.grid_metrics.height);
+                    let mut view = margin_view.split_off(Side::Top, self.metrics.height);
                     view.split_off(Side::Right, 20);
                     let text = Text::literal(30, &*FONT, &format!("{}", ct.char));
                     text.render_placed(view, 1.0, margin_placement);
@@ -913,31 +973,12 @@ impl Editor {
     fn max_dimensions(&self) -> Coord {
         max_dimensions(&self.metrics)
     }
-
-    fn update_path_from_meta(&mut self) {
-        if let Tab::Meta { path_window, .. } = &mut self.tab {
-            let path_string = path_window.buffer.content_string();
-            let path_buf = PathBuf::from(path_string);
-            if self.text_tab.path.as_ref() != Some(&path_buf) {
-                self.text_tab.path = Some(path_buf);
-                self.text_tab.dirty = true;
-            }
-            self.tab = Tab::Edit;
-        }
-    }
 }
 
 impl Applet for Editor {
     type Upstream = ();
 
     fn update(&mut self, message: Self::Message) -> Option<Self::Upstream> {
-        match &message {
-            Msg::Write { row, .. } => {
-                dbg!(row);
-            }
-            _ => {}
-        }
-
         match message {
             Msg::Write { row, ink } => match &mut self.tab {
                 Tab::Meta {
@@ -948,9 +989,10 @@ impl Applet for Editor {
                     *suggested =
                         suggestions(&path_window.buffer.content_string()).unwrap_or_default();
                 }
-                Tab::Edit => {
-                    self.text_tab.dirty = true;
-                    self.text_tab.text.ink_row(ink, row, &mut self.text_stuff);
+                Tab::Edit { id } => {
+                    let text_tab = self.tabs.get_mut(&id).unwrap();
+                    text_tab.dirty = true;
+                    text_tab.text.ink_row(ink, row, &mut self.text_stuff);
                 }
                 Tab::Template => {
                     let ink_type = InkType::classify(&self.metrics, ink);
@@ -998,14 +1040,14 @@ impl Applet for Editor {
             Msg::Erase { .. } => {}
             Msg::Swipe { towards } => match self.tab {
                 // TODO: abstract over the pattern here.
-                Tab::Edit => {
+                Tab::Edit { id } => {
                     let movement = match towards {
                         Side::Top => (1, 0),
                         Side::Bottom => (-1, 0),
                         Side::Left => (0, 1),
                         Side::Right => (0, -1),
                     };
-                    self.text_tab.text.page_relative(movement);
+                    self.tabs.get_mut(&id).unwrap().text.page_relative(movement);
                 }
                 Tab::Template => {
                     let (rows, _) = self.max_dimensions();
@@ -1025,37 +1067,55 @@ impl Applet for Editor {
             },
             Msg::Open { path } => {
                 if let Some(file_contents) = self.report_error(fs::read_to_string(&path)) {
-                    self.text_tab = TextTab {
-                        path: Some(path),
-                        dirty: false,
+                    let id = self.next_tab_id;
+                    self.next_tab_id += 1;
+                    self.tabs.insert(
+                        id,
+                        TextTab {
+                            path: Some(path),
+                            dirty: false,
+                            text: TextWindow::new(
+                                TextBuffer::from_string(&file_contents),
+                                self.atlas.clone(),
+                                self.metrics.clone(),
+                                self.max_dimensions(),
+                            ),
+                        },
+                    );
+                    self.tab = Tab::Edit { id };
+                }
+            }
+            Msg::SaveAs { id, path } => {
+                if !path.exists() && path.parent().iter().any(|p| p.is_dir()) {
+                    let tab = self.tabs.get_mut(&id).unwrap();
+                    tab.path = Some(path);
+                    let saved = tab.save();
+                    if self.report_error(saved).is_some() {
+                        self.tab = Tab::Edit { id }
+                    };
+                }
+            }
+            Msg::New => {
+                // TODO: thread a path through here from meta.
+                let id = self.next_tab_id;
+                self.next_tab_id += 1;
+                self.tabs.insert(
+                    id,
+                    TextTab {
+                        path: None,
                         text: TextWindow::new(
-                            TextBuffer::from_string(&file_contents),
+                            TextBuffer::empty(),
                             self.atlas.clone(),
                             self.metrics.clone(),
                             self.max_dimensions(),
                         ),
-                    };
-                    self.tab = Tab::Edit;
-                }
+                        dirty: false,
+                    },
+                );
+                self.tab = Tab::Edit { id }
             }
-            Msg::Rename => {
-                self.update_path_from_meta();
-            }
-            Msg::New => {
-                self.update_path_from_meta();
-                self.text_tab = TextTab {
-                    path: None,
-                    text: TextWindow::new(
-                        TextBuffer::empty(),
-                        self.atlas.clone(),
-                        self.metrics.clone(),
-                        self.max_dimensions(),
-                    ),
-                    dirty: false,
-                };
-            }
-            Msg::Save => {
-                let result = self.text_tab.save();
+            Msg::Save { id } => {
+                let result = self.tabs.get_mut(&id).unwrap().save();
                 self.report_error(result);
             }
             Msg::SwitchToMeta { current_path } => {
@@ -1069,20 +1129,99 @@ impl Applet for Editor {
     fn current_route(&self) -> &str {
         match self.tab {
             Tab::Meta { .. } => "meta",
-            Tab::Edit => "edit",
+            Tab::Edit { .. } => "edit",
             Tab::Template => "template",
         }
     }
 }
 
-fn button(text: &str, msg: Msg, active: bool) -> Text<Msg> {
-    let builder = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT).literal("    ");
+#[derive(Hash)]
+struct Underline(i32);
+const UNDERLINE: i32 = 3;
+
+impl Fragment for Underline {
+    fn draw(&self, canvas: &mut Canvas) {
+        let size = canvas.bounds().size();
+        for y in 0..size.y.min(UNDERLINE) {
+            for x in y..(size.x.min(self.0) - y) {
+                canvas.write(x, y, color::GRAY(200));
+            }
+        }
+    }
+}
+
+struct Button<T: Widget> {
+    widget: T,
+    on_tap: Option<T::Message>,
+}
+
+impl<T: Widget> Widget for Button<T>
+where
+    T::Message: Clone,
+{
+    type Message = T::Message;
+
+    fn size(&self) -> Vector2<i32> {
+        let mut size = self.widget.size();
+        size.y += UNDERLINE;
+        size
+    }
+
+    fn render(&self, mut view: View<Self::Message>) {
+        if let Some(msg) = &self.on_tap {
+            view.handlers().pad(10).on_tap(msg.clone());
+        }
+        self.widget.render_split(&mut view, Side::Top, 0.0);
+        if self.on_tap.is_some() {
+            view.split_off(Side::Top, UNDERLINE)
+                .draw(&Underline(self.size().x))
+        }
+    }
+}
+
+fn button(text: &str, msg: Msg, active: bool) -> Button<Text<Msg>> {
+    let builder = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT);
     let builder = if active {
-        builder.message(msg).weight(TEXT_WEIGHT)
+        builder.weight(TEXT_WEIGHT)
     } else {
         builder.weight(0.5)
     };
-    builder.literal(text).into_text()
+    let text = builder.literal(text).into_text();
+
+    Button {
+        widget: text,
+        on_tap: if active { Some(msg) } else { None },
+    }
+}
+
+struct Spaced<'a, A>(i32, &'a [A]);
+
+impl<'a, A: Widget> Widget for Spaced<'a, A> {
+    type Message = A::Message;
+
+    fn size(&self) -> Vector2<i32> {
+        let mut size: Vector2<i32> = Vector2::zero();
+        let Spaced(pad, widgets) = self;
+        for (i, a) in widgets.iter().enumerate() {
+            if i != 0 {
+                size.x += *pad;
+            }
+            let a_size = a.size();
+            size.x += a_size.x;
+            size.y = size.y.max(a_size.y);
+        }
+        size
+    }
+
+    fn render(&self, mut view: View<Self::Message>) {
+        let Spaced(pad, widgets) = self;
+        for (i, a) in widgets.iter().enumerate() {
+            if i != 0 {
+                view.split_off(Side::Left, *pad);
+            }
+            a.render_split(&mut view, Side::Left, 0.0);
+        }
+    }
 }
 
 const NUM_RECENT_RECOGNITIONS: usize = 16;
@@ -1115,7 +1254,7 @@ fn main() {
         metrics: metrics.clone(),
         error_string: "".to_string(),
         atlas: atlas.clone(),
-        tab: Tab::Edit,
+        tab: Tab::Template,
         template_offset: 0,
         text_stuff: TextStuff {
             templates: vec![],
@@ -1123,17 +1262,11 @@ fn main() {
             big_recognizer: CharRecognizer::new([]),
             clipboard: None,
         },
-        text_tab: TextTab {
-            path: None,
-            text: TextWindow::new(
-                TextBuffer::from_string(&file_string),
-                atlas,
-                metrics,
-                dimensions,
-            ),
-            dirty: false,
-        },
+        next_tab_id: 0,
+        tabs: BTreeMap::new(),
     };
+
+    widget.update(Msg::SwitchToMeta { current_path: None });
 
     let load_result = widget.load_templates();
     widget.report_error(load_result);

@@ -1,38 +1,61 @@
-use crate::{text_literal, Metrics};
+use crate::{text_literal, Metrics, Vector2};
 use armrest::libremarkable::framebuffer::common::color;
+use armrest::libremarkable::framebuffer::FramebufferIO;
 use armrest::ui::{Cached, Canvas, Fragment, Side, TextFragment, View};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 
-#[derive(Hash)]
-pub struct Border {
-    pub side: Side,
-    pub width: i32,
-    pub start_offset: i32,
-    pub end_offset: i32,
-    pub color: u8,
+const GRID_LINE_COLOR: color = color::GRAY(40);
+const GUIDE_LINE_COLOR: color = color::GRAY(40);
+
+pub type Coord = (usize, usize);
+
+// The width of the padding we put around a drawn grid. May or may not be coloured in.
+pub const GRID_BORDER: i32 = 4;
+
+fn fill(canvas: &mut Canvas, xs: Range<i32>, ys: Range<i32>) {
+    for y in ys {
+        for x in xs.clone() {
+            canvas.write(x, y, GRID_LINE_COLOR);
+        }
+    }
+}
+fn line(canvas: &mut Canvas, xs: Range<i32>, ys: Range<i32>, width: i32) {
+    // grid remnant
+    for y in ys {
+        for x in xs.clone().step_by(width as usize) {
+            canvas.write(x, y, GRID_LINE_COLOR);
+        }
+    }
 }
 
-impl Fragment for Border {
+#[derive(Hash)]
+pub struct GridBorder {
+    pub side: Side,
+    pub width: i32,
+}
+
+impl Fragment for GridBorder {
     fn draw(&self, canvas: &mut Canvas) {
         let size = canvas.bounds().size();
-        let (xrange, yrange) = match self.side {
-            Side::Left => (0..self.width, self.start_offset..(size.y - self.end_offset)),
-            Side::Right => (
-                (size.x - self.width)..size.x,
-                self.start_offset..(size.y - self.end_offset),
-            ),
-            Side::Top => (self.start_offset..(size.x - self.end_offset), 0..self.width),
-            Side::Bottom => (
-                self.start_offset..(size.x - self.end_offset),
-                (size.y - self.width)..size.y,
-            ),
-        };
 
-        for x in xrange {
-            for y in yrange.clone() {
-                canvas.write(x, y, color::GRAY(self.color));
+        match self.side {
+            Side::Left => {
+                fill(canvas, 0..size.x, 0..size.y);
+            }
+            Side::Right => {
+                fill(canvas, 0..size.x, 0..size.y);
+            }
+            Side::Top => {
+                fill(canvas, 0..size.x, 0..2);
+                line(canvas, 0..size.x, 2..size.y, self.width);
+            }
+            Side::Bottom => {
+                let y = size.y - 2;
+                line(canvas, 0..size.x, 0..y, self.width);
+                fill(canvas, 0..size.x, y..size.y);
             }
         }
     }
@@ -47,25 +70,39 @@ pub struct GridCell {
 
 impl Fragment for GridCell {
     fn draw(&self, canvas: &mut Canvas) {
+        if let Some(c) = &self.char {
+            c.draw(canvas);
+        }
+
+        let base_pixel = canvas.bounds().top_left;
         let size = canvas.bounds().size();
+        let fb = canvas.framebuffer();
+
+        let mut darken = move |x: i32, y: i32, color: color| {
+            let pixel = base_pixel + Vector2::new(x, y);
+            let read_pixel = pixel.map(|c| c as u32);
+            let [r0, g0, b0] = fb.read_pixel(read_pixel).to_rgb8();
+            let [r1, g1, b1] = color.to_rgb8();
+            let combined = color::RGB(r0.min(r1), g0.min(g1), b0.min(b1));
+            fb.write_pixel(pixel, combined);
+        };
+
         let top_line = self.baseline - size.y * 3 / 4;
         let mid_line = self.baseline - size.y * 2 / 4;
         let bottom_line = self.baseline - size.y * 1 / 4;
         for y in 0..size.y {
-            canvas.write(0, y, color::GRAY(120));
+            darken(0, y, GRID_LINE_COLOR);
         }
         for x in 1..size.x {
-            canvas.write(x, top_line, color::GRAY(40));
-            canvas.write(x, mid_line, color::GRAY(40));
-            canvas.write(x, bottom_line, color::GRAY(40));
-            canvas.write(x, self.baseline, color::GRAY(120));
+            darken(x, top_line, GUIDE_LINE_COLOR);
+            darken(x, mid_line, GUIDE_LINE_COLOR);
+            darken(x, bottom_line, GUIDE_LINE_COLOR);
+            darken(x, self.baseline, GRID_LINE_COLOR);
+            darken(x, self.baseline + 1, GRID_LINE_COLOR);
             if self.insert_area {
-                canvas.write(x, self.baseline + 1, color::GRAY(120));
-                canvas.write(x, self.baseline + 2, color::GRAY(120));
+                darken(x, self.baseline + 2, GRID_LINE_COLOR);
+                darken(x, self.baseline + 3, GRID_LINE_COLOR);
             }
-        }
-        if let Some(c) = &self.char {
-            c.draw(canvas);
         }
     }
 }
@@ -116,11 +153,6 @@ impl Atlas {
     }
 }
 
-pub type Coord = (usize, usize);
-
-// The width of the padding we put around a drawn grid. May or may not be coloured in.
-pub const GRID_BORDER: i32 = 4;
-
 // TODO: consider making this a widget?
 pub fn draw_grid<T>(
     mut view: View<T>,
@@ -135,41 +167,43 @@ pub fn draw_grid<T>(
     const MARGIN_BORDER: i32 = 2;
 
     // TODO: put this in armrest
-    let height = rows as i32 * metrics.height + GRID_BORDER * 2;
-    let width = cols as i32 * metrics.width + GRID_BORDER * 2;
+    let section_height = metrics.height as f32 / 4.0;
+    let baseline_grid_offset = metrics.baseline as f32 % section_height;
+
+    let top_height = (section_height - baseline_grid_offset).ceil() as i32 + 2;
+    let bottom_height = baseline_grid_offset.floor() as i32 + 2;
+    let left_width = 1; // NB: has a pixel of line in the cell already
+    let right_width = 2;
+
+    let height = rows as i32 * metrics.height + top_height + bottom_height;
+    let width = cols as i32 * metrics.width + left_width + right_width;
     let remaining = view.size();
     view.split_off(Side::Right, (remaining.x - width).max(0));
     view.split_off(Side::Bottom, (remaining.y - height).max(0));
 
     // let view = view.split_off(Side::Left, cols as usize * metrics.width + GRID_BORDER * 2);
-    view.split_off(Side::Top, GRID_BORDER).draw(&Border {
-        side: Side::Bottom,
-        width: MARGIN_BORDER,
-        color: 100,
-        start_offset: GRID_BORDER - LEFT_MARGIN_BORDER,
-        end_offset: GRID_BORDER - MARGIN_BORDER,
-    });
-    view.split_off(Side::Bottom, GRID_BORDER).draw(&Border {
-        side: Side::Top,
-        width: MARGIN_BORDER,
-        color: 100,
-        start_offset: GRID_BORDER - LEFT_MARGIN_BORDER,
-        end_offset: GRID_BORDER - MARGIN_BORDER,
-    });
-    view.split_off(Side::Left, GRID_BORDER).draw(&Border {
-        side: Side::Right,
-        width: LEFT_MARGIN_BORDER,
-        color: 100,
-        start_offset: 0,
-        end_offset: 0,
-    });
-    view.split_off(Side::Right, GRID_BORDER).draw(&Border {
+
+    view.split_off(Side::Left, left_width).draw(&GridBorder {
+        width: metrics.width,
         side: Side::Left,
-        width: MARGIN_BORDER,
-        color: 100,
-        start_offset: 0,
-        end_offset: 0,
     });
+    view.split_off(Side::Right, right_width).draw(&GridBorder {
+        width: metrics.width,
+        side: Side::Right,
+    });
+    view.split_off(
+        Side::Top,
+        (section_height - baseline_grid_offset).ceil() as i32 + 2,
+    )
+    .draw(&GridBorder {
+        width: metrics.width,
+        side: Side::Top,
+    });
+    view.split_off(Side::Bottom, bottom_height)
+        .draw(&GridBorder {
+            width: metrics.width,
+            side: Side::Bottom,
+        });
     for row in 0..rows {
         let mut line_view = view.split_off(Side::Top, metrics.height);
         on_row(row, &mut line_view);
