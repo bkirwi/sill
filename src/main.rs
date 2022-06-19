@@ -3,10 +3,11 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::Display;
 use std::fs::File;
-use std::io::ErrorKind;
+use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::PathBuf;
+use std::process::{Child, Stdio};
 use std::rc::Rc;
-use std::{env, fs, io, mem};
+use std::{env, fs, io, mem, process, thread};
 
 use armrest::app;
 use armrest::app::{Applet, Component};
@@ -53,6 +54,7 @@ pub enum Msg {
     Swipe { towards: Side },
     Save { id: usize },
     Open { path: PathBuf },
+    OpenShell {},
     SaveAs { id: usize, path: PathBuf },
     New,
 }
@@ -393,11 +395,62 @@ pub struct Recognition {
     overwrites: usize,
 }
 
-struct TextStuff {
-    templates: Vec<CharTemplates>,
-    char_recognizer: CharRecognizer,
-    big_recognizer: CharRecognizer,
-    clipboard: Option<TextBuffer>,
+enum TabType {
+    Text(TextTab),
+    Shell(ShellTab),
+}
+
+struct ShellTab {
+    child: Child,
+    shell_output: TextWindow,
+    command_window: TextWindow,
+}
+
+impl ShellTab {
+    pub fn new(atlas: Rc<Atlas>, metrics: Metrics) -> io::Result<ShellTab> {
+        // Launch a bash shell, wiring up everything.
+        let mut child = process::Command::new("/bin/bash")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let mut stdout = child.stdout.take().expect("taking child stdout");
+        thread::spawn(move || {
+            let mut buffer = [0; 1024];
+            loop {
+                let read = match stdout.read(&mut buffer) {
+                    Ok(size) => size,
+                    Err(_) => {
+                        break;
+                    }
+                };
+
+                if read == 0 {
+                    break;
+                }
+
+                // We're assuming that each chunk is itself valid utf8,
+                // which might not be true! Correct would be to use from_utf8
+                // and match on the error case to decide whether to insert a
+                // replacement char or to wait for more input.
+                let contents = String::from_utf8_lossy(&buffer[..read]);
+
+                eprintln!("Got line: {}", contents);
+            }
+        });
+
+        Ok(ShellTab {
+            child,
+            shell_output: TextWindow::new(
+                TextBuffer::empty(),
+                atlas.clone(),
+                metrics.clone(),
+                (10, 10),
+            ),
+            command_window: TextWindow::new(TextBuffer::empty(), atlas, metrics, (10, 10)),
+        })
+    }
 }
 
 struct TextTab {
@@ -437,29 +490,7 @@ struct Editor {
     text_stuff: TextStuff,
 
     next_tab_id: usize,
-    tabs: BTreeMap<usize, TextTab>,
-}
-
-impl TextStuff {
-    fn init_recognizer(&mut self, metrics: &Metrics) {
-        self.char_recognizer = CharRecognizer::new(self.templates.iter().flat_map(|ct| {
-            let c = ct.char;
-            ct.templates
-                .iter()
-                .map(move |t| (ink_to_points(&t.ink, metrics), c))
-        }));
-        self.big_recognizer = CharRecognizer::new(
-            self.templates
-                .iter()
-                .filter(|ct| ['X', 'C', 'V', 'S'].contains(&ct.char))
-                .flat_map(|ct| {
-                    let c = ct.char;
-                    ct.templates
-                        .iter()
-                        .map(move |t| (Points::normalize(&t.ink), c))
-                }),
-        );
-    }
+    tabs: BTreeMap<usize, TabType>,
 }
 
 impl Editor {
@@ -541,37 +572,49 @@ impl Widget for Editor {
                 head_text.render_placed(header, 0.0, 0.5);
             }
             Tab::Edit { id } => {
-                let text_tab = self.tabs.get(&id).unwrap();
-                let path_str = text_tab
-                    .path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy())
-                    .unwrap_or(Cow::Borrowed("<unnamed file>"));
-
-                button(
-                    &path_str,
-                    Msg::SwitchToMeta {
-                        current_path: text_tab
+                match &self.tabs[&id] {
+                    TabType::Text(text_tab) => {
+                        let path_str = text_tab
                             .path
                             .as_ref()
-                            .and_then(|p| p.to_str().map(String::from)),
-                    },
-                    true,
-                )
-                .render_split(&mut header, Side::Left, 0.5);
+                            .map(|p| p.to_string_lossy())
+                            .unwrap_or(Cow::Borrowed("<unnamed file>"));
 
-                Spaced(
-                    40,
-                    &[
                         button(
-                            "save",
-                            Msg::Save { id },
-                            text_tab.path.is_some() && text_tab.dirty,
-                        ),
-                        button("template", Msg::SwitchTab { tab: Tab::Template }, true),
-                    ],
-                )
-                .render_placed(header, 1.0, 0.5);
+                            &path_str,
+                            Msg::SwitchToMeta {
+                                current_path: text_tab
+                                    .path
+                                    .as_ref()
+                                    .and_then(|p| p.to_str().map(String::from)),
+                            },
+                            true,
+                        )
+                        .render_split(&mut header, Side::Left, 0.5);
+
+                        Spaced(
+                            40,
+                            &[
+                                button(
+                                    "save",
+                                    Msg::Save { id },
+                                    text_tab.path.is_some() && text_tab.dirty,
+                                ),
+                                button("template", Msg::SwitchTab { tab: Tab::Template }, true),
+                            ],
+                        )
+                        .render_placed(header, 1.0, 0.5);
+                    }
+                    TabType::Shell(_) => {
+                        let name = format!("Shell #{}", id);
+                        button(&name, Msg::SwitchToMeta { current_path: None }, true).render_split(
+                            &mut header,
+                            Side::Left,
+                            0.5,
+                        );
+                        header.leave_rest_blank();
+                    }
+                };
             }
             Tab::Template => {
                 button(
@@ -609,8 +652,9 @@ impl Widget for Editor {
                 view.split_off(Side::Right, self.right_margin());
 
                 let written_path: PathBuf = path_window.buffer.content_string().into();
+                let entry_height = self.metrics.height * 3 / 2;
 
-                let mut buttons = view.split_off(Side::Top, TOP_MARGIN);
+                let mut buttons = view.split_off(Side::Top, entry_height);
 
                 Spaced(40, &[button("create", Msg::New, true)]).render_split(
                     &mut buttons,
@@ -619,8 +663,7 @@ impl Widget for Editor {
                 );
 
                 buttons.leave_rest_blank();
-
-                let entry_height = self.metrics.height * 3 / 2;
+                view.split_off(Side::Top, entry_height);
 
                 Text::literal(self.metrics.height, &*FONT, "Tabs:").render_split(
                     &mut view,
@@ -629,31 +672,52 @@ impl Widget for Editor {
                 );
 
                 for (tab_id, tab) in &self.tabs {
-                    let path_str = tab
-                        .path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy())
-                        .unwrap_or(Cow::Borrowed("<unnamed file>"));
-                    let tab_label = button(
-                        &path_str,
-                        Msg::SwitchTab {
-                            tab: Tab::Edit { id: *tab_id },
-                        },
-                        true,
-                    );
-                    let mut tab_view = view.split_off(Side::Top, entry_height);
-                    tab_view.split_off(Side::Left, 20);
-                    tab_label.render_split(&mut tab_view, Side::Left, 0.5);
+                    match &self.tabs[&tab_id] {
+                        TabType::Text(tab) => {
+                            let path_str = tab
+                                .path
+                                .as_ref()
+                                .map(|p| p.to_string_lossy())
+                                .unwrap_or(Cow::Borrowed("<unnamed file>"));
+                            let tab_label = button(
+                                &path_str,
+                                Msg::SwitchTab {
+                                    tab: Tab::Edit { id: *tab_id },
+                                },
+                                true,
+                            );
+                            let mut tab_view = view.split_off(Side::Top, entry_height);
+                            tab_view.split_off(Side::Left, 20);
+                            tab_label.render_split(&mut tab_view, Side::Left, 0.5);
 
-                    button(
-                        "save as",
-                        Msg::SaveAs {
-                            id: *tab_id,
-                            path: written_path.clone(),
-                        },
-                        true,
-                    )
-                    .render_split(&mut tab_view, Side::Right, 0.5);
+                            button(
+                                "save as",
+                                Msg::SaveAs {
+                                    id: *tab_id,
+                                    path: written_path.clone(),
+                                },
+                                true,
+                            )
+                            .render_split(
+                                &mut tab_view,
+                                Side::Right,
+                                0.5,
+                            );
+                        }
+                        TabType::Shell(shell_tab) => {
+                            let name = format!("Shell #{}", tab_id);
+                            let tab_label = button(
+                                &name,
+                                Msg::SwitchTab {
+                                    tab: Tab::Edit { id: *tab_id },
+                                },
+                                true,
+                            );
+                            let mut tab_view = view.split_off(Side::Top, entry_height);
+                            tab_view.split_off(Side::Left, 20);
+                            tab_label.render_split(&mut tab_view, Side::Left, 0.5);
+                        }
+                    }
                 }
 
                 view.split_off(Side::Top, entry_height);
@@ -699,38 +763,50 @@ impl Widget for Editor {
                 }
             }
             Tab::Edit { id } => {
-                let text_tab = &self.tabs[&id];
-                // Run the line numbers down the margin!
-                let mut margin_view = view.split_off(Side::Left, self.left_margin());
-                margin_view.split_off(Side::Right, 20);
-                // Based on the top margin of the text area and the baseline height.
-                // TODO: calculate this from other metrics.
-                margin_view.split_off(Side::Top, 7);
-                for row in (text_tab.text.origin.0..).take(text_tab.text.dimensions.0) {
-                    let mut view =
-                        margin_view.split_off(Side::Top, text_tab.text.grid_metrics.height);
-                    let text = Text::literal(30, &*FONT, &format!("{}", row));
-                    text.render_placed(view, 1.0, 1.0);
+                match &self.tabs[&id] {
+                    TabType::Text(text_tab) => {
+                        // Run the line numbers down the margin!
+                        let mut margin_view = view.split_off(Side::Left, self.left_margin());
+                        margin_view.split_off(Side::Right, 20);
+                        // Based on the top margin of the text area and the baseline height.
+                        // TODO: calculate this from other metrics.
+                        margin_view.split_off(Side::Top, 7);
+                        for row in (text_tab.text.origin.0..).take(text_tab.text.dimensions.0) {
+                            let mut view =
+                                margin_view.split_off(Side::Top, text_tab.text.grid_metrics.height);
+                            let text = Text::literal(30, &*FONT, &format!("{}", row));
+                            text.render_placed(view, 1.0, 1.0);
+                        }
+                        margin_view.leave_rest_blank();
+
+                        text_tab
+                            .text
+                            .borrow()
+                            .map(|message| match message {
+                                TextMessage::Write(row, ink) => Msg::Write { row, ink },
+                            })
+                            .render_split(&mut view, Side::Top, 0.0);
+
+                        let text = Text::literal(
+                            DEFAULT_CHAR_HEIGHT,
+                            &*FONT,
+                            &format!(
+                                "{}:{} [{}]",
+                                text_tab.text.origin.0, text_tab.text.origin.1, self.error_string
+                            ),
+                        );
+                        text.render_placed(view, 0.0, 0.4);
+                    }
+                    TabType::Shell(shell_tab) => {
+                        shell_tab
+                            .shell_output
+                            .borrow()
+                            .map(|message| match message {
+                                TextMessage::Write(row, ink) => Msg::Write { row, ink },
+                            })
+                            .render_split(&mut view, Side::Top, 0.5);
+                    }
                 }
-                margin_view.leave_rest_blank();
-
-                text_tab
-                    .text
-                    .borrow()
-                    .map(|message| match message {
-                        TextMessage::Write(row, ink) => Msg::Write { row, ink },
-                    })
-                    .render_split(&mut view, Side::Top, 0.0);
-
-                let text = Text::literal(
-                    DEFAULT_CHAR_HEIGHT,
-                    &*FONT,
-                    &format!(
-                        "{}:{} [{}]",
-                        text_tab.text.origin.0, text_tab.text.origin.1, self.error_string
-                    ),
-                );
-                text.render_placed(view, 0.0, 0.4);
             }
             Tab::Template => {
                 let mut margin_view = view.split_off(Side::Left, self.left_margin());
@@ -989,11 +1065,15 @@ impl Applet for Editor {
                     *suggested =
                         suggestions(&path_window.buffer.content_string()).unwrap_or_default();
                 }
-                Tab::Edit { id } => {
-                    let text_tab = self.tabs.get_mut(&id).unwrap();
-                    text_tab.dirty = true;
-                    text_tab.text.ink_row(ink, row, &mut self.text_stuff);
-                }
+                Tab::Edit { id } => match self.tabs.get_mut(&id).unwrap() {
+                    TabType::Text(text_tab) => {
+                        text_tab.dirty = true;
+                        text_tab.text.ink_row(ink, row, &mut self.text_stuff);
+                    }
+                    TabType::Shell(_) => {
+                        todo!("write...");
+                    }
+                },
                 Tab::Template => {
                     let ink_type = InkType::classify(&self.metrics, ink);
                     if let Some(char_data) = self.text_stuff.templates.get_mut(row) {
@@ -1047,7 +1127,14 @@ impl Applet for Editor {
                         Side::Left => (0, 1),
                         Side::Right => (0, -1),
                     };
-                    self.tabs.get_mut(&id).unwrap().text.page_relative(movement);
+                    match self.tabs.get_mut(&id).unwrap() {
+                        TabType::Text(text_tab) => {
+                            text_tab.text.page_relative(movement);
+                        }
+                        TabType::Shell(_) => {
+                            todo!("Implement swipe");
+                        }
+                    }
                 }
                 Tab::Template => {
                     let (rows, _) = self.max_dimensions();
@@ -1071,7 +1158,7 @@ impl Applet for Editor {
                     self.next_tab_id += 1;
                     self.tabs.insert(
                         id,
-                        TextTab {
+                        TabType::Text(TextTab {
                             path: Some(path),
                             dirty: false,
                             text: TextWindow::new(
@@ -1080,19 +1167,23 @@ impl Applet for Editor {
                                 self.metrics.clone(),
                                 self.max_dimensions(),
                             ),
-                        },
+                        }),
                     );
                     self.tab = Tab::Edit { id };
                 }
             }
             Msg::SaveAs { id, path } => {
                 if !path.exists() && path.parent().iter().any(|p| p.is_dir()) {
-                    let tab = self.tabs.get_mut(&id).unwrap();
-                    tab.path = Some(path);
-                    let saved = tab.save();
-                    if self.report_error(saved).is_some() {
-                        self.tab = Tab::Edit { id }
-                    };
+                    match self.tabs.get_mut(&id).unwrap() {
+                        TabType::Text(tab) => {
+                            tab.path = Some(path);
+                            let saved = tab.save();
+                            if self.report_error(saved).is_some() {
+                                self.tab = Tab::Edit { id }
+                            };
+                        }
+                        _ => {}
+                    }
                 }
             }
             Msg::New => {
@@ -1101,7 +1192,7 @@ impl Applet for Editor {
                 self.next_tab_id += 1;
                 self.tabs.insert(
                     id,
-                    TextTab {
+                    TabType::Text(TextTab {
                         path: None,
                         text: TextWindow::new(
                             TextBuffer::empty(),
@@ -1110,17 +1201,21 @@ impl Applet for Editor {
                             self.max_dimensions(),
                         ),
                         dirty: false,
-                    },
+                    }),
                 );
                 self.tab = Tab::Edit { id }
             }
-            Msg::Save { id } => {
-                let result = self.tabs.get_mut(&id).unwrap().save();
-                self.report_error(result);
-            }
+            Msg::Save { id } => match self.tabs.get_mut(&id).unwrap() {
+                TabType::Text(text_tab) => {
+                    let result = text_tab.save();
+                    self.report_error(result);
+                }
+                _ => {}
+            },
             Msg::SwitchToMeta { current_path } => {
                 self.tab = self.load_meta(current_path);
             }
+            Msg::OpenShell { .. } => {}
         }
 
         None
@@ -1245,8 +1340,6 @@ fn main() {
 
     let metrics = Metrics::new(DEFAULT_CHAR_HEIGHT);
 
-    let dimensions = max_dimensions(&metrics);
-
     let atlas = Rc::new(Atlas::new(metrics.clone()));
 
     let mut widget = Editor {
@@ -1256,12 +1349,7 @@ fn main() {
         atlas: atlas.clone(),
         tab: Tab::Template,
         template_offset: 0,
-        text_stuff: TextStuff {
-            templates: vec![],
-            char_recognizer: CharRecognizer::new([]),
-            big_recognizer: CharRecognizer::new([]),
-            clipboard: None,
-        },
+        text_stuff: TextStuff::new(),
         next_tab_id: 0,
         tabs: BTreeMap::new(),
     };

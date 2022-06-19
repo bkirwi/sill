@@ -1,4 +1,4 @@
-use crate::Metrics;
+use crate::{Metrics, TextBuffer};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 
@@ -142,5 +142,43 @@ impl CharRecognizer {
         }
         self.templates.swap(0, index);
         self.chars.swap(0, index)
+    }
+}
+
+pub struct TextStuff {
+    pub templates: Vec<CharTemplates>,
+    pub char_recognizer: CharRecognizer,
+    pub big_recognizer: CharRecognizer,
+    pub clipboard: Option<TextBuffer>,
+}
+
+impl TextStuff {
+    pub fn new() -> TextStuff {
+        TextStuff {
+            templates: vec![],
+            char_recognizer: CharRecognizer::new([]),
+            big_recognizer: CharRecognizer::new([]),
+            clipboard: None,
+        }
+    }
+
+    pub fn init_recognizer(&mut self, metrics: &Metrics) {
+        self.char_recognizer = CharRecognizer::new(self.templates.iter().flat_map(|ct| {
+            let c = ct.char;
+            ct.templates
+                .iter()
+                .map(move |t| (ink_to_points(&t.ink, metrics), c))
+        }));
+        self.big_recognizer = CharRecognizer::new(
+            self.templates
+                .iter()
+                .filter(|ct| ['X', 'C', 'V', 'S'].contains(&ct.char))
+                .flat_map(|ct| {
+                    let c = ct.char;
+                    ct.templates
+                        .iter()
+                        .map(move |t| (Points::normalize(&t.ink), c))
+                }),
+        );
     }
 }
