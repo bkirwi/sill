@@ -47,7 +47,7 @@ const DEFAULT_CHAR_HEIGHT: i32 = 40;
 
 const TEMPLATE_FILE: &str = "templates.json";
 
-const HELP_TEXT: &str = include_str!("intro.md");
+const HELP_TEXT: &str = include_str!("../README.md");
 
 #[derive(Clone)]
 pub enum Msg {
