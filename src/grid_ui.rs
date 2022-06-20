@@ -162,9 +162,6 @@ pub fn draw_grid<T>(
     mut draw_cell: impl FnMut(usize, usize, View<T>),
 ) {
     let (rows, cols) = dimensions;
-    // TODO: fit to space provided?
-    const LEFT_MARGIN_BORDER: i32 = 4;
-    const MARGIN_BORDER: i32 = 2;
 
     // TODO: put this in armrest
     let section_height = metrics.height as f32 / 4.0;
