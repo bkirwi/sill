@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-const GRID_LINE_COLOR: color = color::GRAY(60);
-const GUIDE_LINE_COLOR: color = color::GRAY(60);
+const GRID_LINE_COLOR: color = color::GRAY(80);
+const GUIDE_LINE_COLOR: color = color::GRAY(80);
 
 pub type Coord = (usize, usize);
 
@@ -66,16 +66,23 @@ pub struct GridCell {
     pub height: i32,
     pub baseline: i32,
     pub char: Option<(char, u8)>,
-    pub insert_area: bool,
+    pub underline: bool,
+    pub draw_guidelines: bool,
 }
 
 impl GridCell {
-    pub fn new(metrics: &Metrics, char: Option<(char, u8)>, insert_area: bool) -> GridCell {
+    pub fn new(
+        metrics: &Metrics,
+        char: Option<(char, u8)>,
+        underline: bool,
+        draw_guidelines: bool,
+    ) -> GridCell {
         GridCell {
             height: metrics.height,
             baseline: metrics.baseline,
             char,
-            insert_area,
+            underline,
+            draw_guidelines,
         }
     }
 }
@@ -109,12 +116,14 @@ impl Fragment for GridCell {
             darken(0, y, GRID_LINE_COLOR);
         }
         for x in 1..size.x {
-            darken(x, top_line, GUIDE_LINE_COLOR);
-            darken(x, mid_line, GUIDE_LINE_COLOR);
-            darken(x, bottom_line, GUIDE_LINE_COLOR);
+            if self.draw_guidelines {
+                darken(x, top_line, GUIDE_LINE_COLOR);
+                darken(x, mid_line, GUIDE_LINE_COLOR);
+                darken(x, bottom_line, GUIDE_LINE_COLOR);
+            }
             darken(x, self.baseline, GRID_LINE_COLOR);
             darken(x, self.baseline + 1, GRID_LINE_COLOR);
-            if self.insert_area {
+            if self.underline {
                 darken(x, self.baseline + 2, GRID_LINE_COLOR);
                 darken(x, self.baseline + 3, GRID_LINE_COLOR);
             }

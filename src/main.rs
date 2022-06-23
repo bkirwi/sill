@@ -665,6 +665,7 @@ impl Widget for Editor {
                             &self.metrics,
                             maybe_char.map(|ct| (ct.char, 80)),
                             false,
+                            true,
                         ));
                         if let Some(char_data) = maybe_char {
                             if let Some(template) = char_data.templates.get(col) {

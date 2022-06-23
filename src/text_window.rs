@@ -292,9 +292,9 @@ impl Widget for TextWindow {
                     })
                     .unwrap_or(None);
 
-                let fragment = self
-                    .atlas
-                    .get_cell(GridCell::new(&self.grid_metrics, char, false));
+                let fragment =
+                    self.atlas
+                        .get_cell(GridCell::new(&self.grid_metrics, char, false, true));
                 view.draw(&*fragment);
             },
         );
