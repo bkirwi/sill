@@ -173,9 +173,7 @@ impl TextWindow {
                         Some('V') => {
                             if let Selection::Single { carat } = &self.selection {
                                 if let Some(buffer) = text_stuff.clipboard.take() {
-                                    let trailing = self.buffer.split_off(carat.coord);
-                                    self.buffer.append(buffer);
-                                    self.buffer.append(trailing);
+                                    self.buffer.splice(carat.coord, buffer);
                                     self.tentative_recognitions
                                         .retain(|r| r.coord < carat.coord);
                                 }
