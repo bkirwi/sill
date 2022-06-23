@@ -1,6 +1,7 @@
 use crate::{
-    draw_grid, ink_to_points, Atlas, Carat, Coord, InkType, Metrics, Recognition, Selection,
-    Template, TextBuffer, TextMessage, TextStuff, Vector2, GRID_BORDER, NUM_RECENT_RECOGNITIONS,
+    draw_grid, ink_to_points, Atlas, Carat, Coord, GridCell, InkType, Metrics, Recognition,
+    Selection, Template, TextBuffer, TextMessage, TextStuff, Vector2, GRID_BORDER,
+    NUM_RECENT_RECOGNITIONS,
 };
 use armrest::dollar::Points;
 use armrest::ink::Ink;
@@ -276,22 +277,24 @@ impl Widget for TextWindow {
                 };
 
                 let line = self.buffer.contents.get(row);
-                let (char, background) = line
+                let char = line
                     .map(|l| match col.cmp(&l.len()) {
-                        Ordering::Less => (l.get(col).copied(), false),
+                        Ordering::Less => Some((l[col], 230)),
                         Ordering::Equal => {
                             let char = if row + 1 == self.buffer.contents.len() {
                                 '⌧'
                             } else {
                                 '⏎'
                             };
-                            (Some(char), true)
+                            Some((char, 80))
                         }
-                        _ => (None, false),
+                        _ => None,
                     })
-                    .unwrap_or((None, false));
+                    .unwrap_or(None);
 
-                let fragment = self.atlas.get_cell(char, is_selected, background);
+                let fragment = self
+                    .atlas
+                    .get_cell(GridCell::new(&self.grid_metrics, char, false));
                 view.draw(&*fragment);
             },
         );

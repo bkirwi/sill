@@ -61,17 +61,32 @@ impl Fragment for GridBorder {
     }
 }
 
-#[derive(Hash)]
+#[derive(Hash, Clone, Copy, Eq, PartialEq)]
 pub struct GridCell {
+    pub height: i32,
     pub baseline: i32,
-    pub char: Option<TextFragment>,
+    pub char: Option<(char, u8)>,
     pub insert_area: bool,
+}
+
+impl GridCell {
+    pub fn new(metrics: &Metrics, char: Option<(char, u8)>, insert_area: bool) -> GridCell {
+        GridCell {
+            height: metrics.height,
+            baseline: metrics.baseline,
+            char,
+            insert_area,
+        }
+    }
 }
 
 impl Fragment for GridCell {
     fn draw(&self, canvas: &mut Canvas) {
-        if let Some(c) = &self.char {
-            c.draw(canvas);
+        if let Some((c, w)) = &self.char {
+            let weight = (*w) as f32 / 255.0;
+            text_literal(self.height, &c.to_string())
+                .with_weight(weight)
+                .draw(canvas);
         }
 
         let base_pixel = canvas.bounds().top_left;
@@ -109,7 +124,7 @@ impl Fragment for GridCell {
 
 pub struct Atlas {
     metrics: Metrics,
-    cache: RefCell<HashMap<(Option<char>, bool, bool), Rc<Cached<GridCell>>>>,
+    cache: RefCell<HashMap<GridCell, Rc<Cached<GridCell>>>>,
 }
 
 impl Atlas {
@@ -120,35 +135,13 @@ impl Atlas {
         }
     }
 
-    fn fresh_cell(
-        &self,
-        char: Option<char>,
-        selected: bool,
-        background: bool,
-    ) -> Rc<Cached<GridCell>> {
-        let weight = if background { 0.3 } else { 0.9 };
-        Rc::new(Cached::new(GridCell {
-            baseline: self.metrics.baseline,
-            char: char
-                .map(|c| text_literal(self.metrics.height, &c.to_string()).with_weight(weight)),
-            insert_area: selected,
-        }))
-    }
-
-    pub fn get_cell(
-        &self,
-        char: Option<char>,
-        selected: bool,
-        background: bool,
-    ) -> Rc<Cached<GridCell>> {
+    pub fn get_cell(&self, cell: GridCell) -> Rc<Cached<GridCell>> {
         if let Ok(mut cache) = self.cache.try_borrow_mut() {
-            let value = cache
-                .entry((char, selected, background))
-                .or_insert(self.fresh_cell(char, selected, background));
+            let value = cache.entry(cell).or_insert(Rc::new(Cached::new(cell)));
             Rc::clone(value)
         } else {
             // Again, shouldn't be common, but it's good to be prepared!
-            self.fresh_cell(char, selected, background)
+            Rc::new(Cached::new(cell))
         }
     }
 }

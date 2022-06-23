@@ -661,9 +661,11 @@ impl Widget for Editor {
                     |row, col, mut template_view| {
                         let row = self.template_offset + row;
                         let maybe_char = self.text_stuff.templates.get(row);
-                        let grid = self
-                            .atlas
-                            .get_cell(maybe_char.map(|ct| ct.char), false, true);
+                        let grid = self.atlas.get_cell(GridCell::new(
+                            &self.metrics,
+                            maybe_char.map(|ct| (ct.char, 80)),
+                            false,
+                        ));
                         if let Some(char_data) = maybe_char {
                             if let Some(template) = char_data.templates.get(col) {
                                 template_view.annotate(&template.ink);
