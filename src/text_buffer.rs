@@ -125,31 +125,6 @@ impl TextBuffer {
         TextBuffer { contents }
     }
 
-    pub fn write(&mut self, (row, col): Coord, c: char) -> Replace {
-        self.replace(Replace {
-            from: (row, col),
-            until: (row, col + 1),
-            content: TextBuffer::from_string(&c.to_string()),
-        })
-    }
-
-    pub fn splice(&mut self, at: Coord, mut buffer: TextBuffer) -> Replace {
-        self.replace(Replace {
-            from: at,
-            until: at,
-            content: buffer,
-        })
-    }
-
-    /// Remove all the contents between the two provided coordinates.
-    pub fn remove(&mut self, from: Coord, until: Coord) -> Replace {
-        self.replace(Replace {
-            from,
-            until,
-            content: TextBuffer::empty(),
-        })
-    }
-
     pub fn end(&self) -> Coord {
         let row = self.contents.len() - 1;
         (row, self.contents[row].len())
@@ -175,11 +150,28 @@ pub struct Replace {
 }
 
 impl Replace {
-    pub fn insert_at(coord: Coord, content: TextBuffer) -> Replace {
+    pub fn splice(coord: Coord, content: TextBuffer) -> Replace {
         Replace {
             from: coord,
             until: coord,
             content,
+        }
+    }
+
+    /// Remove all the contents between the two provided coordinates.
+    pub fn remove(from: Coord, until: Coord) -> Replace {
+        Replace {
+            from,
+            until,
+            content: TextBuffer::empty(),
+        }
+    }
+
+    pub fn write((row, col): Coord, c: char) -> Replace {
+        Replace {
+            from: (row, col),
+            until: (row, col + 1),
+            content: TextBuffer::from_string(&c.to_string()),
         }
     }
 }

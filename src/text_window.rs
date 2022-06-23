@@ -49,7 +49,7 @@ impl TextWindow {
     }
 
     pub fn write(&mut self, coord: Coord, c: char) {
-        self.buffer.write(coord, c);
+        self.buffer.replace(Replace::write(coord, c));
     }
 
     pub fn carat(&mut self, carat: Carat) {
@@ -146,11 +146,8 @@ impl TextWindow {
                     {
                         Some('X') => {
                             if let Selection::Range { start, end } = &self.selection {
-                                let undo = self.buffer.replace(Replace {
-                                    from: start.coord,
-                                    until: end.coord,
-                                    content: TextBuffer::empty(),
-                                });
+                                let undo =
+                                    self.buffer.replace(Replace::remove(start.coord, end.coord));
                                 text_stuff.clipboard = Some(undo.content);
                                 self.tentative_recognitions
                                     .retain(|r| r.coord < start.coord);
@@ -167,7 +164,7 @@ impl TextWindow {
                         Some('V') => {
                             if let Selection::Single { carat } = &self.selection {
                                 if let Some(buffer) = text_stuff.clipboard.take() {
-                                    self.buffer.splice(carat.coord, buffer);
+                                    self.buffer.replace(Replace::splice(carat.coord, buffer));
                                     self.tentative_recognitions
                                         .retain(|r| r.coord < carat.coord);
                                 }
@@ -176,10 +173,10 @@ impl TextWindow {
                         }
                         Some('S') => {
                             if let Selection::Range { start, end } = &self.selection {
-                                self.buffer.splice(
+                                self.buffer.replace(Replace::splice(
                                     start.coord,
                                     TextBuffer::padding(diff_coord(start.coord, end.coord)),
-                                );
+                                ));
                                 self.tentative_recognitions
                                     .retain(|r| r.coord < start.coord);
                             }
@@ -192,7 +189,8 @@ impl TextWindow {
             InkType::Strikethrough { start, end } => {
                 let start = self.origin.1 + start;
                 let end = self.origin.1 + end;
-                self.buffer.remove((row, start), (row, end));
+                self.buffer
+                    .replace(Replace::remove((row, start), (row, end)));
                 self.tentative_recognitions
                     .retain(|r| r.coord < (row, start));
             }
