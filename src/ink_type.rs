@@ -13,6 +13,7 @@ fn is_erase(ink: &Ink) -> bool {
 
 /// What sort of ink is this?
 /// The categorization here is fairly naive / hardcoded, but should do for broad classes of inputs.
+#[derive(Debug)]
 pub enum InkType {
     // A horizontal strike through the current line: typically, delete.
     Strikethrough { start: usize, end: usize },

@@ -5,6 +5,12 @@ pub struct TextBuffer {
     pub contents: Vec<Vec<char>>,
 }
 
+impl Default for TextBuffer {
+    fn default() -> Self {
+        TextBuffer::empty()
+    }
+}
+
 impl TextBuffer {
     pub fn empty() -> TextBuffer {
         TextBuffer {

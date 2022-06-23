@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-const GRID_LINE_COLOR: color = color::GRAY(40);
-const GUIDE_LINE_COLOR: color = color::GRAY(40);
+const GRID_LINE_COLOR: color = color::GRAY(60);
+const GUIDE_LINE_COLOR: color = color::GRAY(60);
 
 pub type Coord = (usize, usize);
 

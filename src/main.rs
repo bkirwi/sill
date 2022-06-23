@@ -3,14 +3,14 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::Display;
 use std::fs::File;
-use std::io::{BufRead, BufReader, ErrorKind, Read};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::rc::Rc;
 use std::{env, fs, io, mem, process, thread};
 
 use armrest::app;
-use armrest::app::{Applet, Component};
+use armrest::app::{Applet, Component, Sender};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 use armrest::libremarkable::cgmath::Zero;
@@ -51,15 +51,44 @@ const HELP_TEXT: &str = include_str!("../README.md");
 
 #[derive(Clone)]
 pub enum Msg {
-    SwitchToMeta { current_path: Option<String> },
-    SwitchTab { tab: Tab },
-    Write { row: usize, ink: Ink },
-    Erase { row: usize, ink: Ink },
-    Swipe { towards: Side },
-    Save { id: usize },
-    Open { path: PathBuf },
-    OpenShell {},
-    SaveAs { id: usize, path: PathBuf },
+    SwitchToMeta {
+        current_path: Option<String>,
+    },
+    SwitchTab {
+        tab: Option<usize>,
+    },
+    Write {
+        row: usize,
+        ink: Ink,
+    },
+    Erase {
+        row: usize,
+        ink: Ink,
+    },
+    Swipe {
+        towards: Side,
+    },
+    Save {
+        id: usize,
+    },
+    Open {
+        path: PathBuf,
+    },
+    OpenShell {
+        working_dir: PathBuf,
+    },
+    ShellInput {
+        id: usize,
+        stderr: bool,
+        content: String,
+    },
+    SubmitShell {
+        id: usize,
+    },
+    SaveAs {
+        id: usize,
+        path: PathBuf,
+    },
     New,
 }
 
@@ -121,41 +150,89 @@ struct ShellTab {
     child: Child,
     shell_output: TextWindow,
     command_window: TextWindow,
+    history: VecDeque<TextBuffer>,
 }
 
 impl ShellTab {
-    pub fn new(atlas: Rc<Atlas>, metrics: Metrics) -> io::Result<ShellTab> {
+    pub fn new(
+        id: usize,
+        atlas: Rc<Atlas>,
+        metrics: Metrics,
+        sender: Sender<Msg>,
+        working_dir: PathBuf,
+    ) -> io::Result<ShellTab> {
         // Launch a bash shell, wiring up everything.
         let mut child = process::Command::new("/bin/bash")
+            .args([
+                // Disables readline... we're the ones implementing editing!
+                "--noediting",
+                // Disables the standard .bashrc etc. These often include things
+                // that won't work in our captive shell. We may eventually want
+                // to read the standard files and just override some behaviour.
+                "--norc",
+                // Disables job control, which relies on Real Terminal Features.
+                "+m",
+                // Run in interactive mode. This does ~many things, like
+                // enabling the prompt, and gets us closer to a normal shell.
+                "-i",
+            ])
+            .current_dir(&working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
 
-        let mut stdout = child.stdout.take().expect("taking child stdout");
-        thread::spawn(move || {
-            let mut buffer = [0; 1024];
-            loop {
-                let read = match stdout.read(&mut buffer) {
-                    Ok(size) => size,
-                    Err(_) => {
+        fn tail<T: Read + Send + 'static>(
+            mut stream: T,
+            id: usize,
+            sender: Sender<Msg>,
+            stderr: bool,
+        ) {
+            thread::spawn(move || {
+                eprintln!("Tailing stream!");
+                let mut buffer = [0; 1024];
+                loop {
+                    let read = match stream.read(&mut buffer) {
+                        Ok(size) => size,
+                        Err(e) => {
+                            eprintln!("Error! {:?}", e);
+                            break;
+                        }
+                    };
+
+                    if read == 0 {
+                        eprintln!("Empty read: end of stream.");
                         break;
                     }
-                };
 
-                if read == 0 {
-                    break;
+                    // We're assuming that each chunk is itself valid utf8,
+                    // which might not be true! Correct would be to use from_utf8
+                    // and match on the error case to decide whether to insert a
+                    // replacement char or to wait for more input.
+                    let contents = String::from_utf8_lossy(&buffer[..read]);
+
+                    sender.send(Msg::ShellInput {
+                        id,
+                        stderr,
+                        content: contents.to_string(),
+                    });
                 }
+                eprintln!("Thread shutting down!");
+            });
+        }
 
-                // We're assuming that each chunk is itself valid utf8,
-                // which might not be true! Correct would be to use from_utf8
-                // and match on the error case to decide whether to insert a
-                // replacement char or to wait for more input.
-                let contents = String::from_utf8_lossy(&buffer[..read]);
-
-                eprintln!("Got line: {}", contents);
-            }
-        });
+        tail(
+            child.stdout.take().expect("taking child stdout"),
+            id,
+            sender.clone(),
+            false,
+        );
+        tail(
+            child.stderr.take().expect("taking child stderr"),
+            id,
+            sender,
+            true,
+        );
 
         Ok(ShellTab {
             child,
@@ -163,9 +240,10 @@ impl ShellTab {
                 TextBuffer::empty(),
                 atlas.clone(),
                 metrics.clone(),
-                (10, 10),
+                (36, 60),
             ),
-            command_window: TextWindow::new(TextBuffer::empty(), atlas, metrics, (10, 10)),
+            command_window: TextWindow::new(TextBuffer::empty(), atlas, metrics, (3, 50)),
+            history: Default::default(),
         })
     }
 }
@@ -191,6 +269,7 @@ impl TextTab {
 }
 
 struct Editor {
+    sender: Sender<Msg>,
     metrics: Metrics,
 
     error_string: String,
@@ -317,7 +396,7 @@ impl Widget for Editor {
                                     Msg::Save { id },
                                     text_tab.path.is_some() && text_tab.dirty,
                                 ),
-                                button("template", Msg::SwitchTab { tab: Tab::Template }, true),
+                                button("template", Msg::SwitchTab { tab: None }, true),
                             ],
                         )
                         .render_placed(header, 1.0, 0.5);
@@ -334,14 +413,11 @@ impl Widget for Editor {
                 };
             }
             Tab::Template => {
-                button(
-                    "edit",
-                    Msg::SwitchTab {
-                        tab: Tab::Edit { id: 0 },
-                    },
-                    true,
-                )
-                .render_split(&mut header, Side::Right, 0.5);
+                button("edit", Msg::SwitchToMeta { current_path: None }, true).render_split(
+                    &mut header,
+                    Side::Right,
+                    0.5,
+                );
                 header.leave_rest_blank();
             }
         }
@@ -373,11 +449,29 @@ impl Widget for Editor {
 
                 let mut buttons = view.split_off(Side::Top, entry_height);
 
-                Spaced(40, &[button("create", Msg::New, true)]).render_split(
-                    &mut buttons,
-                    Side::Right,
-                    0.5,
-                );
+                let written_dir = if written_path.is_dir() {
+                    written_path.clone()
+                } else {
+                    written_path
+                        .parent()
+                        .map_or(PathBuf::from("/"), |p| p.to_path_buf())
+                };
+
+                Spaced(
+                    40,
+                    &[
+                        button("create", Msg::New, true),
+                        button(
+                            "new shell",
+                            Msg::OpenShell {
+                                working_dir: written_dir,
+                            },
+                            true,
+                        ),
+                        button("templates", Msg::SwitchTab { tab: None }, true),
+                    ],
+                )
+                .render_split(&mut buttons, Side::Right, 0.5);
 
                 buttons.leave_rest_blank();
                 view.split_off(Side::Top, entry_height);
@@ -396,13 +490,8 @@ impl Widget for Editor {
                                 .as_ref()
                                 .map(|p| p.to_string_lossy())
                                 .unwrap_or(Cow::Borrowed("<unnamed file>"));
-                            let tab_label = button(
-                                &path_str,
-                                Msg::SwitchTab {
-                                    tab: Tab::Edit { id: *tab_id },
-                                },
-                                true,
-                            );
+                            let tab_label =
+                                button(&path_str, Msg::SwitchTab { tab: Some(*tab_id) }, true);
                             let mut tab_view = view.split_off(Side::Top, entry_height);
                             tab_view.split_off(Side::Left, 20);
                             tab_label.render_split(&mut tab_view, Side::Left, 0.5);
@@ -423,13 +512,8 @@ impl Widget for Editor {
                         }
                         TabType::Shell(shell_tab) => {
                             let name = format!("Shell #{}", tab_id);
-                            let tab_label = button(
-                                &name,
-                                Msg::SwitchTab {
-                                    tab: Tab::Edit { id: *tab_id },
-                                },
-                                true,
-                            );
+                            let tab_label =
+                                button(&name, Msg::SwitchTab { tab: Some(*tab_id) }, true);
                             let mut tab_view = view.split_off(Side::Top, entry_height);
                             tab_view.split_off(Side::Left, 20);
                             tab_label.render_split(&mut tab_view, Side::Left, 0.5);
@@ -518,10 +602,29 @@ impl Widget for Editor {
                         shell_tab
                             .shell_output
                             .borrow()
+                            .map(|message| Msg::Erase {
+                                // FIXME: sorry!
+                                row: 0,
+                                ink: Ink::new(),
+                            })
+                            .render_split(&mut view, Side::Top, 0.5);
+
+                        view.split_off(Side::Left, self.left_margin());
+                        view.split_off(Side::Right, self.right_margin());
+
+                        shell_tab
+                            .command_window
+                            .borrow()
                             .map(|message| match message {
                                 TextMessage::Write(row, ink) => Msg::Write { row, ink },
                             })
-                            .render_split(&mut view, Side::Top, 0.5);
+                            .render_split(&mut view, Side::Left, 0.5);
+
+                        button("submit", Msg::SubmitShell { id: *id }, true).render_split(
+                            &mut view,
+                            Side::Right,
+                            0.5,
+                        )
                     }
                 }
             }
@@ -615,6 +718,12 @@ impl Editor {
     fn max_dimensions(&self) -> Coord {
         max_dimensions(&self.metrics)
     }
+
+    fn take_id(&mut self) -> usize {
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        id
+    }
 }
 
 impl Applet for Editor {
@@ -636,8 +745,10 @@ impl Applet for Editor {
                         text_tab.dirty = true;
                         text_tab.text.ink_row(ink, row, &mut self.text_stuff);
                     }
-                    TabType::Shell(_) => {
-                        todo!("write...");
+                    TabType::Shell(shell_tab) => {
+                        shell_tab
+                            .command_window
+                            .ink_row(ink, row, &mut self.text_stuff);
                     }
                 },
                 Tab::Template => {
@@ -677,11 +788,10 @@ impl Applet for Editor {
                 }
             },
             Msg::SwitchTab { tab } => {
-                if !matches!(tab, Tab::Template) && matches!(self.tab, Tab::Template) {
-                    self.report_error(self.save_templates());
-                    self.text_stuff.init_recognizer(&self.metrics);
-                }
-                self.tab = tab;
+                self.tab = match tab {
+                    None => Tab::Template,
+                    Some(id) => Tab::Edit { id },
+                };
             }
             Msg::Erase { .. } => {}
             Msg::Swipe { towards } => match self.tab {
@@ -697,8 +807,8 @@ impl Applet for Editor {
                         TabType::Text(text_tab) => {
                             text_tab.text.page_relative(movement);
                         }
-                        TabType::Shell(_) => {
-                            todo!("Implement swipe");
+                        TabType::Shell(shell_tab) => {
+                            shell_tab.shell_output.page_relative(movement);
                         }
                     }
                 }
@@ -720,8 +830,7 @@ impl Applet for Editor {
             },
             Msg::Open { path } => {
                 if let Some(file_contents) = self.report_error(fs::read_to_string(&path)) {
-                    let id = self.next_tab_id;
-                    self.next_tab_id += 1;
+                    let id = self.take_id();
                     self.tabs.insert(
                         id,
                         TabType::Text(TextTab {
@@ -754,8 +863,7 @@ impl Applet for Editor {
             }
             Msg::New => {
                 // TODO: thread a path through here from meta.
-                let id = self.next_tab_id;
-                self.next_tab_id += 1;
+                let id = self.take_id();
                 self.tabs.insert(
                     id,
                     TabType::Text(TextTab {
@@ -779,9 +887,51 @@ impl Applet for Editor {
                 _ => {}
             },
             Msg::SwitchToMeta { current_path } => {
+                if matches!(self.tab, Tab::Template) {
+                    self.report_error(self.save_templates());
+                    self.text_stuff.init_recognizer(&self.metrics);
+                }
                 self.tab = self.load_meta(current_path);
             }
-            Msg::OpenShell { .. } => {}
+            Msg::OpenShell { working_dir } => {
+                let id = self.take_id();
+                let shell = ShellTab::new(
+                    id,
+                    self.atlas.clone(),
+                    self.metrics.clone(),
+                    self.sender.clone(),
+                    working_dir,
+                )
+                .unwrap();
+                self.tabs.insert(id, TabType::Shell(shell));
+            }
+            Msg::ShellInput {
+                id,
+                stderr,
+                content,
+            } => {
+                if let Some(TabType::Shell(shell_tab)) = self.tabs.get_mut(&id) {
+                    shell_tab
+                        .shell_output
+                        .buffer
+                        .append(TextBuffer::from_string(&content));
+                }
+            }
+            Msg::SubmitShell { id } => {
+                if let Some(TabType::Shell(shell_tab)) = self.tabs.get_mut(&id) {
+                    let buffer = mem::take(&mut shell_tab.command_window.buffer);
+                    let mut string_contents = buffer.content_string();
+                    string_contents.push('\n');
+                    if let Some(stdin) = &mut shell_tab.child.stdin {
+                        shell_tab
+                            .shell_output
+                            .buffer
+                            .append(TextBuffer::from_string(&string_contents));
+                        stdin.write(string_contents.as_bytes());
+                    }
+                    shell_tab.history.push_back(buffer);
+                }
+            }
         }
 
         None
@@ -908,22 +1058,24 @@ fn main() {
 
     let atlas = Rc::new(Atlas::new(metrics.clone()));
 
-    let mut widget = Editor {
-        template_path,
-        metrics: metrics.clone(),
-        error_string: "".to_string(),
-        atlas: atlas.clone(),
-        tab: Tab::Template,
-        template_offset: 0,
-        text_stuff: TextStuff::new(),
-        next_tab_id: 0,
-        tabs: BTreeMap::new(),
-    };
+    let mut component = Component::with_sender(app.wakeup(), |sender| {
+        let mut widget = Editor {
+            sender,
+            template_path,
+            metrics: metrics.clone(),
+            error_string: "".to_string(),
+            atlas: atlas.clone(),
+            tab: Tab::Template,
+            template_offset: 0,
+            text_stuff: TextStuff::new(),
+            next_tab_id: 0,
+            tabs: BTreeMap::new(),
+        };
+        let load_result = widget.load_templates();
+        widget.tab = widget.load_meta(None);
+        widget.report_error(load_result);
+        widget
+    });
 
-    widget.update(Msg::SwitchToMeta { current_path: None });
-
-    let load_result = widget.load_templates();
-    widget.report_error(load_result);
-
-    app.run(&mut Component::new(widget))
+    app.run(&mut component)
 }

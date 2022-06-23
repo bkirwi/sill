@@ -111,6 +111,7 @@ impl TextWindow {
 
     pub fn ink_row(&mut self, ink: Ink, row: usize, text_stuff: &mut TextStuff) {
         let ink_type = InkType::classify(&self.grid_metrics, ink);
+        dbg!(&ink_type);
         match ink_type {
             InkType::Scratch { col } => {
                 let col = self.origin.1 + col;
