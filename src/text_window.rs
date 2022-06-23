@@ -257,13 +257,13 @@ impl Widget for TextWindow {
                 let col = col_origin + col_offset;
                 let coord = (row, col);
 
-                let is_selected = match &self.selection {
-                    Selection::Normal => false,
+                let (underline, draw_guidelines) = match &self.selection {
+                    Selection::Normal => (false, true),
                     Selection::Single { carat } => {
                         if coord == carat.coord {
                             view.annotate(&carat.ink);
                         }
-                        coord >= carat.coord
+                        (false, false)
                     }
                     Selection::Range { start, end } => {
                         if coord == start.coord {
@@ -272,7 +272,8 @@ impl Widget for TextWindow {
                         if coord == end.coord {
                             view.annotate(&end.ink);
                         }
-                        coord >= start.coord && coord < end.coord
+                        let in_selection = coord >= start.coord && coord < end.coord;
+                        (in_selection, false)
                     }
                 };
 
@@ -292,9 +293,12 @@ impl Widget for TextWindow {
                     })
                     .unwrap_or(None);
 
-                let fragment =
-                    self.atlas
-                        .get_cell(GridCell::new(&self.grid_metrics, char, false, true));
+                let fragment = self.atlas.get_cell(GridCell::new(
+                    &self.grid_metrics,
+                    char,
+                    underline,
+                    draw_guidelines,
+                ));
                 view.draw(&*fragment);
             },
         );
