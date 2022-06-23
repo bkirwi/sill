@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 type Coord = (usize, usize);
 
-fn add_coord(a: Coord, b: Coord) -> Coord {
+pub fn add_coord(a: Coord, b: Coord) -> Coord {
     if b.0 == 0 {
         (a.0, a.1 + b.1)
     } else {
@@ -10,7 +10,7 @@ fn add_coord(a: Coord, b: Coord) -> Coord {
     }
 }
 
-fn diff_coord(a: Coord, b: Coord) -> Coord {
+pub fn diff_coord(a: Coord, b: Coord) -> Coord {
     let (a, b) = if a < b { (a, b) } else { (b, a) };
     if a.0 == b.0 {
         (0, b.1 - a.1)
@@ -61,23 +61,6 @@ impl TextBuffer {
             let cols = self.contents[row].len();
             (row, cols.min(col))
         }
-    }
-
-    /// Pad with newlines and spaces as necessary such that `contents[row][col..col]` is valid.
-    pub fn pad(&mut self, row: usize, col: usize) {
-        if self.contents.len() <= row {
-            self.contents.resize(row + 1, vec![]);
-        }
-        let row = &mut self.contents[row];
-        if row.len() < col {
-            row.resize(col, ' ');
-        }
-    }
-
-    /// Insert a specific char at specific coordinates, padding as necessary.
-    pub fn write(&mut self, (row, col): Coord, c: char) {
-        self.pad(row, col + 1);
-        self.contents[row][col] = c;
     }
 
     pub fn split_off(&mut self, at: Coord) -> TextBuffer {
@@ -142,6 +125,14 @@ impl TextBuffer {
         TextBuffer { contents }
     }
 
+    pub fn write(&mut self, (row, col): Coord, c: char) -> Replace {
+        self.replace(Replace {
+            from: (row, col),
+            until: (row, col + 1),
+            content: TextBuffer::from_string(&c.to_string()),
+        })
+    }
+
     pub fn splice(&mut self, at: Coord, mut buffer: TextBuffer) -> Replace {
         self.replace(Replace {
             from: at,
@@ -178,9 +169,9 @@ impl TextBuffer {
 }
 
 pub struct Replace {
-    from: Coord,
-    until: Coord,
-    content: TextBuffer,
+    pub from: Coord,
+    pub until: Coord,
+    pub content: TextBuffer,
 }
 
 impl Replace {

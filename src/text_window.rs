@@ -1,8 +1,4 @@
-use crate::{
-    draw_grid, ink_to_points, Atlas, Carat, Coord, GridCell, InkType, Metrics, Recognition,
-    Selection, Template, TextBuffer, TextMessage, TextStuff, Vector2, GRID_BORDER,
-    NUM_RECENT_RECOGNITIONS,
-};
+use crate::*;
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 use armrest::ui::{View, Widget};
@@ -150,10 +146,12 @@ impl TextWindow {
                     {
                         Some('X') => {
                             if let Selection::Range { start, end } = &self.selection {
-                                let trailing = self.buffer.split_off(end.coord);
-                                let selection = self.buffer.split_off(start.coord);
-                                text_stuff.clipboard = Some(selection);
-                                self.buffer.append(trailing);
+                                let undo = self.buffer.replace(Replace {
+                                    from: start.coord,
+                                    until: end.coord,
+                                    content: TextBuffer::empty(),
+                                });
+                                text_stuff.clipboard = Some(undo.content);
                                 self.tentative_recognitions
                                     .retain(|r| r.coord < start.coord);
                             }
@@ -161,12 +159,8 @@ impl TextWindow {
                         }
                         Some('C') => {
                             if let Selection::Range { start, end } = &self.selection {
-                                // Regrettable!
-                                let trailing = self.buffer.split_off(end.coord);
-                                let selection = self.buffer.split_off(start.coord);
-                                text_stuff.clipboard = Some(selection.clone());
-                                self.buffer.append(selection);
-                                self.buffer.append(trailing);
+                                text_stuff.clipboard =
+                                    Some(self.buffer.copy(start.coord, end.coord));
                             }
                             self.selection = Selection::Normal;
                         }
@@ -182,21 +176,10 @@ impl TextWindow {
                         }
                         Some('S') => {
                             if let Selection::Range { start, end } = &self.selection {
-                                self.buffer.pad(start.coord.0, start.coord.1);
-                                let (lines, spaces) = if start.coord.0 == end.coord.0 {
-                                    (0, end.coord.1 - start.coord.1)
-                                } else {
-                                    (end.coord.0 - start.coord.0, end.coord.1)
-                                };
-                                let mut string = String::new();
-                                for _ in 0..lines {
-                                    string.push('\n');
-                                }
-                                for _ in 0..spaces {
-                                    string.push(' ');
-                                }
-                                self.buffer
-                                    .splice(start.coord, TextBuffer::from_string(&string));
+                                self.buffer.splice(
+                                    start.coord,
+                                    TextBuffer::padding(diff_coord(start.coord, end.coord)),
+                                );
                                 self.tentative_recognitions
                                     .retain(|r| r.coord < start.coord);
                             }
