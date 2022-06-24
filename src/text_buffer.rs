@@ -143,6 +143,7 @@ impl TextBuffer {
     }
 }
 
+#[derive(Clone)]
 pub struct Replace {
     pub from: Coord,
     pub until: Coord,

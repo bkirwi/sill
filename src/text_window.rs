@@ -15,6 +15,7 @@ pub struct TextWindow {
     selection: Selection,
     pub dimensions: Coord,
     pub origin: Coord,
+    pub undos: VecDeque<Replace>,
     tentative_recognitions: VecDeque<Recognition>,
 }
 
@@ -32,6 +33,7 @@ impl TextWindow {
             selection: Selection::Normal,
             dimensions,
             origin: (0, 0),
+            undos: VecDeque::new(),
             tentative_recognitions: VecDeque::new(),
         }
     }
@@ -46,10 +48,6 @@ impl TextWindow {
         }
         *row = page_round(*row, row_d, self.dimensions.0);
         *col = page_round(*col, col_d, self.dimensions.1);
-    }
-
-    pub fn write(&mut self, coord: Coord, c: char) {
-        self.buffer.replace(Replace::write(coord, c));
     }
 
     pub fn carat(&mut self, carat: Carat) {
@@ -106,25 +104,54 @@ impl TextWindow {
         }
     }
 
+    pub fn replace(&mut self, replace: Replace) {
+        let from = replace.from;
+        let old_until = replace.until;
+        let undo = self.buffer.replace(replace);
+        let new_until = undo.until;
+        self.undos.push_front(undo);
+        self.tentative_recognitions.retain_mut(|r| {
+            if r.coord < from {
+                true
+            } else if r.coord < old_until {
+                false
+            } else {
+                let diff = diff_coord(old_until, r.coord);
+                r.coord = add_coord(new_until, diff);
+                true
+            }
+        });
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(undo) = self.undos.pop_front() {
+            self.replace(undo);
+            self.undos.pop_front(); // TODO: shift to a redo stack.
+        }
+    }
+
     pub fn ink_row(&mut self, ink: Ink, row: usize, text_stuff: &mut TextStuff) {
         let ink_type = InkType::classify(&self.grid_metrics, ink);
-        dbg!(&ink_type);
         match ink_type {
             InkType::Scratch { col } => {
                 let col = self.origin.1 + col;
-                self.write((row, col), ' ');
+                self.replace(Replace::write((row, col), ' '));
                 self.tentative_recognitions
                     .retain(|r| r.coord != (row, col));
             }
             InkType::Glyphs { tokens } => {
                 if matches!(self.selection, Selection::Normal) {
+                    let mut tokens: Vec<_> = tokens.into_iter().collect();
+                    tokens.sort_by_key(|(col, _)| *col);
+                    // TODO: a little coalescing perhaps?
                     for (col, ink) in tokens {
                         let col = col + self.origin.1;
                         if let Some(c) = text_stuff
                             .char_recognizer
                             .best_match(&ink_to_points(&ink, &self.grid_metrics), f32::MAX)
                         {
-                            self.write((row, col), c);
+                            let coord = (row, col);
+                            self.replace(Replace::write(coord, c));
                             if let Some(r) = self.record_recognition((row, col), ink, c) {
                                 if r.overwrites > 0 {
                                     if let Some(t) = text_stuff
@@ -146,11 +173,9 @@ impl TextWindow {
                     {
                         Some('X') => {
                             if let Selection::Range { start, end } = &self.selection {
-                                let undo =
-                                    self.buffer.replace(Replace::remove(start.coord, end.coord));
-                                text_stuff.clipboard = Some(undo.content);
-                                self.tentative_recognitions
-                                    .retain(|r| r.coord < start.coord);
+                                text_stuff.clipboard =
+                                    Some(self.buffer.copy(start.coord, end.coord));
+                                self.replace(Replace::remove(start.coord, end.coord));
                             }
                             self.selection = Selection::Normal;
                         }
@@ -164,21 +189,17 @@ impl TextWindow {
                         Some('V') => {
                             if let Selection::Single { carat } = &self.selection {
                                 if let Some(buffer) = text_stuff.clipboard.take() {
-                                    self.buffer.replace(Replace::splice(carat.coord, buffer));
-                                    self.tentative_recognitions
-                                        .retain(|r| r.coord < carat.coord);
+                                    self.replace(Replace::splice(carat.coord, buffer));
                                 }
                             }
                             self.selection = Selection::Normal;
                         }
                         Some('S') => {
                             if let Selection::Range { start, end } = &self.selection {
-                                self.buffer.replace(Replace::splice(
+                                self.replace(Replace::splice(
                                     start.coord,
                                     TextBuffer::padding(diff_coord(start.coord, end.coord)),
                                 ));
-                                self.tentative_recognitions
-                                    .retain(|r| r.coord < start.coord);
                             }
                             self.selection = Selection::Normal;
                         }
@@ -189,8 +210,7 @@ impl TextWindow {
             InkType::Strikethrough { start, end } => {
                 let start = self.origin.1 + start;
                 let end = self.origin.1 + end;
-                self.buffer
-                    .replace(Replace::remove((row, start), (row, end)));
+                self.replace(Replace::remove((row, start), (row, end)));
                 self.tentative_recognitions
                     .retain(|r| r.coord < (row, start));
             }

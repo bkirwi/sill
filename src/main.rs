@@ -74,6 +74,9 @@ pub enum Msg {
     Open {
         path: PathBuf,
     },
+    Undo {
+        id: usize,
+    },
     OpenShell {
         working_dir: PathBuf,
     },
@@ -391,6 +394,7 @@ impl Widget for Editor {
                         Spaced(
                             40,
                             &[
+                                button("undo", Msg::Undo { id }, !text_tab.text.undos.is_empty()),
                                 button(
                                     "save",
                                     Msg::Save { id },
@@ -882,6 +886,12 @@ impl Applet for Editor {
                 );
                 self.tab = Tab::Edit { id }
             }
+            Msg::Undo { id } => match self.tabs.get_mut(&id).unwrap() {
+                TabType::Text(text_tab) => {
+                    text_tab.text.undo();
+                }
+                _ => {}
+            },
             Msg::Save { id } => match self.tabs.get_mut(&id).unwrap() {
                 TabType::Text(text_tab) => {
                     let result = text_tab.save();
