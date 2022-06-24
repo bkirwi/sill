@@ -15,7 +15,7 @@ pub fn diff_coord(a: Coord, b: Coord) -> Coord {
     if a.0 == b.0 {
         (0, b.1 - a.1)
     } else {
-        (b.0 - a.0, b.0)
+        (b.0 - a.0, b.1)
     }
 }
 
