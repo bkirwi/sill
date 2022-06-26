@@ -52,11 +52,11 @@ const HELP_TEXT: &str = include_str!("../README.md");
 
 #[derive(Clone)]
 pub enum Msg {
-    SwitchToMeta {
-        current_path: Option<String>,
+    MetaPath {
+        current_path: String,
     },
     SwitchTab {
-        tab: Option<usize>,
+        tab: Tab,
     },
     Write {
         ink: Ink,
@@ -95,16 +95,33 @@ pub enum Msg {
     New,
 }
 
+pub struct Meta {
+    path_window: TextWindow,
+    suggested: Vec<PathBuf>,
+}
+
+impl Meta {
+    fn new(path_window: TextWindow) -> Meta {
+        let mut new = Meta {
+            path_window,
+            suggested: vec![],
+        };
+
+        new.reload_suggestions();
+
+        new
+    }
+
+    pub fn reload_suggestions(&mut self) {
+        self.suggested = suggestions(&self.path_window.buffer.content_string()).unwrap_or_default()
+    }
+}
+
 #[derive(Clone)]
 pub enum Tab {
-    Meta {
-        path_window: TextWindow,
-        suggested: Vec<PathBuf>,
-    },
-    Edit {
-        id: usize,
-    },
+    Meta,
     Template,
+    Edit(usize),
 }
 
 type Coord = (usize, usize);
@@ -235,12 +252,7 @@ impl ShellTab {
 
         Ok(ShellTab {
             child,
-            shell_output: TextWindow::new(
-                TextBuffer::empty(),
-                atlas,
-                metrics,
-                dimensions,
-            ),
+            shell_output: TextWindow::new(TextBuffer::empty(), atlas, metrics, dimensions),
             history: Default::default(),
         })
     }
@@ -276,6 +288,8 @@ struct Editor {
 
     // tabs
     tab: Tab,
+
+    meta: Meta,
 
     // template stuff
     template_path: PathBuf,
@@ -326,28 +340,6 @@ impl Editor {
     }
 }
 
-impl Editor {
-    fn load_meta(&self, path: Option<String>) -> Tab {
-        let path = path
-            .map(Cow::Owned)
-            .or(env::var("HOME").ok().map(|mut s| {
-                // HOME often doesn't have a trailing slash, but multiples are OK.
-                s.push('/');
-                Cow::Owned(s)
-            }))
-            .unwrap_or(Cow::Borrowed("/"));
-        Tab::Meta {
-            path_window: TextWindow::new(
-                TextBuffer::from_string(&path),
-                self.atlas.clone(),
-                self.metrics.clone(),
-                (1, self.max_dimensions().1),
-            ),
-            suggested: suggestions(&path).unwrap_or_default(),
-        }
-    }
-}
-
 impl Widget for Editor {
     type Message = Msg;
 
@@ -365,7 +357,7 @@ impl Widget for Editor {
                 let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, "armrest-edit v0.0.1");
                 head_text.render_placed(header, 0.0, 0.5);
             }
-            Tab::Edit { id } => {
+            Tab::Edit(id) => {
                 match &self.tabs[&id] {
                     TabType::Text(text_tab) => {
                         let path_str = text_tab
@@ -374,17 +366,11 @@ impl Widget for Editor {
                             .map(|p| p.to_string_lossy())
                             .unwrap_or(Cow::Borrowed("<unnamed file>"));
 
-                        button(
-                            &path_str,
-                            Msg::SwitchToMeta {
-                                current_path: text_tab
-                                    .path
-                                    .as_ref()
-                                    .and_then(|p| p.to_str().map(String::from)),
-                            },
-                            true,
-                        )
-                        .render_split(&mut header, Side::Left, 0.5);
+                        button(&path_str, Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
+                            &mut header,
+                            Side::Left,
+                            0.5,
+                        );
 
                         Spaced(
                             40,
@@ -395,14 +381,13 @@ impl Widget for Editor {
                                     Msg::Save { id },
                                     text_tab.path.is_some() && text_tab.dirty,
                                 ),
-                                button("template", Msg::SwitchTab { tab: None }, true),
                             ],
                         )
                         .render_placed(header, 1.0, 0.5);
                     }
                     TabType::Shell(_) => {
                         let name = format!("Shell #{}", id);
-                        button(&name, Msg::SwitchToMeta { current_path: None }, true).render_split(
+                        button(&name, Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
                             &mut header,
                             Side::Left,
                             0.5,
@@ -414,7 +399,7 @@ impl Widget for Editor {
                 };
             }
             Tab::Template => {
-                button("edit", Msg::SwitchToMeta { current_path: None }, true).render_split(
+                button("done", Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
                     &mut header,
                     Side::Right,
                     0.5,
@@ -430,13 +415,11 @@ impl Widget for Editor {
         }
 
         match &self.tab {
-            Tab::Meta {
-                path_window,
-                suggested,
-            } => {
+            Tab::Meta => {
                 view.split_off(Side::Left, self.left_margin());
 
-                path_window
+                self.meta
+                    .path_window
                     .borrow()
                     .map(|message| match message {
                         TextMessage::Write(ink) => Msg::Write { ink },
@@ -445,7 +428,7 @@ impl Widget for Editor {
 
                 view.split_off(Side::Right, self.right_margin());
 
-                let written_path: PathBuf = path_window.buffer.content_string().into();
+                let written_path: PathBuf = self.meta.path_window.buffer.content_string().into();
                 let entry_height = self.metrics.height * 3 / 2;
 
                 let mut buttons = view.split_off(Side::Top, entry_height);
@@ -469,7 +452,7 @@ impl Widget for Editor {
                             },
                             true,
                         ),
-                        button("templates", Msg::SwitchTab { tab: None }, true),
+                        button("templates", Msg::SwitchTab { tab: Tab::Template }, true),
                     ],
                 )
                 .render_split(&mut buttons, Side::Right, 0.5);
@@ -491,8 +474,13 @@ impl Widget for Editor {
                                 .as_ref()
                                 .map(|p| p.to_string_lossy())
                                 .unwrap_or(Cow::Borrowed("<unnamed file>"));
-                            let tab_label =
-                                button(&path_str, Msg::SwitchTab { tab: Some(*tab_id) }, true);
+                            let tab_label = button(
+                                &path_str,
+                                Msg::SwitchTab {
+                                    tab: Tab::Edit(*tab_id),
+                                },
+                                true,
+                            );
                             let mut tab_view = view.split_off(Side::Top, entry_height);
                             tab_view.split_off(Side::Left, 20);
                             tab_label.render_split(&mut tab_view, Side::Left, 0.5);
@@ -513,8 +501,13 @@ impl Widget for Editor {
                         }
                         TabType::Shell(_shell_tab) => {
                             let name = format!("Shell #{}", tab_id);
-                            let tab_label =
-                                button(&name, Msg::SwitchTab { tab: Some(*tab_id) }, true);
+                            let tab_label = button(
+                                &name,
+                                Msg::SwitchTab {
+                                    tab: Tab::Edit(*tab_id),
+                                },
+                                true,
+                            );
                             let mut tab_view = view.split_off(Side::Top, entry_height);
                             tab_view.split_off(Side::Left, 20);
                             tab_label.render_split(&mut tab_view, Side::Left, 0.5);
@@ -530,7 +523,7 @@ impl Widget for Editor {
                     0.0,
                 );
 
-                for s in suggested {
+                for s in &self.meta.suggested {
                     let mut suggest_view = view.split_off(Side::Top, entry_height);
                     let path_string = if s.is_dir() {
                         let mut owned = s.to_string_lossy().into_owned();
@@ -543,8 +536,8 @@ impl Widget for Editor {
                     let msg = if s.is_file() {
                         Msg::Open { path: s.clone() }
                     } else {
-                        Msg::SwitchToMeta {
-                            current_path: Some(path_string.to_string()),
+                        Msg::MetaPath {
+                            current_path: path_string.to_string(),
                         }
                     };
 
@@ -554,17 +547,17 @@ impl Widget for Editor {
                         0.5,
                     );
 
-                    button(
-                        "copy",
-                        Msg::SwitchToMeta {
-                            current_path: Some(path_string.to_string()),
-                        },
-                        true,
-                    )
-                    .render_split(&mut suggest_view, Side::Right, 0.5);
+                    // button(
+                    //     "copy",
+                    //     Msg::MetaPath {
+                    //         current_path: path_string.to_string(),
+                    //     },
+                    //     true,
+                    // )
+                    // .render_split(&mut suggest_view, Side::Right, 0.5);
                 }
             }
-            Tab::Edit { id } => {
+            Tab::Edit(id) => {
                 match &self.tabs[id] {
                     TabType::Text(text_tab) => {
                         // Run the line numbers down the margin!
@@ -725,15 +718,15 @@ impl Applet for Editor {
             Msg::Write { ink, .. } => {
                 if let Some(ink_type) = InkType::classify(&self.metrics, ink) {
                     match &mut self.tab {
-                        Tab::Meta {
-                            path_window,
-                            suggested,
-                        } => {
-                            path_window.ink_row(ink_type, &mut self.text_stuff);
-                            *suggested = suggestions(&path_window.buffer.content_string())
-                                .unwrap_or_default();
+                        Tab::Meta => {
+                            self.meta
+                                .path_window
+                                .ink_row(ink_type, &mut self.text_stuff);
+                            self.meta.suggested =
+                                suggestions(&self.meta.path_window.buffer.content_string())
+                                    .unwrap_or_default();
                         }
-                        Tab::Edit { id } => match self.tabs.get_mut(id).unwrap() {
+                        Tab::Edit(id) => match self.tabs.get_mut(id).unwrap() {
                             TabType::Text(text_tab) => {
                                 text_tab.dirty = true;
                                 text_tab.text.ink_row(ink_type, &mut self.text_stuff);
@@ -768,15 +761,16 @@ impl Applet for Editor {
                 }
             }
             Msg::SwitchTab { tab } => {
-                self.tab = match tab {
-                    None => Tab::Template,
-                    Some(id) => Tab::Edit { id },
-                };
+                if matches!(self.tab, Tab::Template) {
+                    self.report_error(self.save_templates());
+                    self.text_stuff.init_recognizer(&self.metrics);
+                }
+                self.tab = tab;
             }
             Msg::Erase { .. } => {}
             Msg::Swipe { towards } => match self.tab {
                 // TODO: abstract over the pattern here.
-                Tab::Edit { id } => {
+                Tab::Edit(id) => {
                     let movement = match towards {
                         Side::Top => (1, 0),
                         Side::Bottom => (-1, 0),
@@ -824,7 +818,7 @@ impl Applet for Editor {
                             ),
                         }),
                     );
-                    self.tab = Tab::Edit { id };
+                    self.tab = Tab::Edit(id);
                 }
             }
             Msg::SaveAs { id, path } => {
@@ -834,7 +828,7 @@ impl Applet for Editor {
                             tab.path = Some(path);
                             let saved = tab.save();
                             if self.report_error(saved).is_some() {
-                                self.tab = Tab::Edit { id }
+                                self.tab = Tab::Edit(id)
                             };
                         }
                         _ => {}
@@ -857,7 +851,7 @@ impl Applet for Editor {
                         dirty: false,
                     }),
                 );
-                self.tab = Tab::Edit { id }
+                self.tab = Tab::Edit(id)
             }
             Msg::Undo { id } => match self.tabs.get_mut(&id).unwrap() {
                 TabType::Text(text_tab) => {
@@ -872,12 +866,12 @@ impl Applet for Editor {
                 }
                 _ => {}
             },
-            Msg::SwitchToMeta { current_path } => {
-                if matches!(self.tab, Tab::Template) {
-                    self.report_error(self.save_templates());
-                    self.text_stuff.init_recognizer(&self.metrics);
-                }
-                self.tab = self.load_meta(current_path);
+            Msg::MetaPath { current_path } => {
+                self.meta.path_window.buffer = TextBuffer::from_string(&current_path);
+                self.meta.reload_suggestions();
+
+                // Probably redundant
+                self.tab = Tab::Meta;
             }
             Msg::OpenShell { working_dir } => {
                 let id = self.take_id();
@@ -891,6 +885,7 @@ impl Applet for Editor {
                 )
                 .unwrap();
                 self.tabs.insert(id, TabType::Shell(shell));
+                self.tab = Tab::Edit(id);
             }
             Msg::ShellInput {
                 id,
@@ -1039,6 +1034,24 @@ fn main() {
 
     let atlas = Rc::new(Atlas::new(metrics.clone()));
 
+    let max_dimensions = max_dimensions(&metrics);
+
+    let meta_path = env::var("HOME")
+        .ok()
+        .map(|mut s| {
+            // HOME often doesn't have a trailing slash, but multiples are OK.
+            s.push('/');
+            Cow::Owned(s)
+        })
+        .unwrap_or(Cow::Borrowed("/"));
+
+    let meta = Meta::new(TextWindow::new(
+        TextBuffer::from_string(&meta_path),
+        atlas.clone(),
+        metrics.clone(),
+        (1, max_dimensions.1),
+    ));
+
     let mut component = Component::with_sender(app.wakeup(), |sender| {
         let mut widget = Editor {
             sender,
@@ -1046,14 +1059,15 @@ fn main() {
             metrics: metrics.clone(),
             error_string: "".to_string(),
             atlas: atlas.clone(),
-            tab: Tab::Template,
+            tab: Tab::Meta,
             template_offset: 0,
             text_stuff: TextStuff::new(),
             next_tab_id: 0,
             tabs: BTreeMap::new(),
+            meta,
         };
+
         let load_result = widget.load_templates();
-        widget.tab = widget.load_meta(None);
         widget.report_error(load_result);
         widget
     });
