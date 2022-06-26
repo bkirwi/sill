@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::rc::Rc;
 use std::{env, fs, io, process, thread};
@@ -637,6 +637,14 @@ const TEXT_WEIGHT: f32 = 0.9;
 const NUM_SUGGESTIONS: usize = 16;
 const MAX_DIR_ENTRIES: usize = 1024;
 
+fn full_path(path: &Path) -> Option<String> {
+    let mut string = path.to_str()?.to_string();
+    if path.is_dir() {
+        string.push('/');
+    }
+    Some(string)
+}
+
 fn suggestions(current_path: &str) -> io::Result<Vec<String>> {
     if !current_path.starts_with('/') {
         // All paths must be absolute.
@@ -654,16 +662,7 @@ fn suggestions(current_path: &str) -> io::Result<Vec<String>> {
                 .any(|s| s.starts_with(file))
         })
         .take(MAX_DIR_ENTRIES)
-        .filter_map(|s| {
-            let path = s.path();
-            path.to_str().map(|s| {
-                let mut string = s.to_string();
-                if path.is_dir() {
-                    string.push('/');
-                }
-                string
-            })
-        })
+        .filter_map(|s| full_path(&s.path()))
         .collect();
 
     // NB: if this is slow, pull in the partial sort crate.
@@ -796,8 +795,8 @@ impl Applet for Editor {
             },
             Msg::Open { path } => {
                 // If we reopen meta, we're likely to want another file in the same dir.
-                if let Some(dir) = path.parent() {
-                    self.meta.path_window.buffer = TextBuffer::from_string(&dir.to_string_lossy());
+                if let Some(dir) = path.parent().and_then(full_path) {
+                    self.meta.path_window.buffer = TextBuffer::from_string(&dir);
                     self.meta.reload_suggestions();
                 }
 
@@ -1034,14 +1033,9 @@ fn main() {
 
     let max_dimensions = max_dimensions(&metrics);
 
-    let meta_path = env::var("HOME")
-        .ok()
-        .map(|mut s| {
-            // HOME often doesn't have a trailing slash, but multiples are OK.
-            s.push('/');
-            Cow::Owned(s)
-        })
-        .unwrap_or(Cow::Borrowed("/"));
+    let meta_path = env::var_os("HOME")
+        .and_then(|mut os| full_path(Path::new(&os)))
+        .unwrap_or("/".to_string());
 
     let meta = Meta::new(TextWindow::new(
         TextBuffer::from_string(&meta_path),
