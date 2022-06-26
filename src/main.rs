@@ -97,7 +97,7 @@ pub enum Msg {
 
 pub struct Meta {
     path_window: TextWindow,
-    suggested: Vec<PathBuf>,
+    suggested: Vec<String>,
 }
 
 impl Meta {
@@ -525,36 +525,18 @@ impl Widget for Editor {
 
                 for s in &self.meta.suggested {
                     let mut suggest_view = view.split_off(Side::Top, entry_height);
-                    let path_string = if s.is_dir() {
-                        let mut owned = s.to_string_lossy().into_owned();
-                        owned.push('/');
-                        owned.into()
-                    } else {
-                        s.to_string_lossy()
-                    };
 
-                    let msg = if s.is_file() {
-                        Msg::Open { path: s.clone() }
-                    } else {
+                    let msg = if s.ends_with('/') {
                         Msg::MetaPath {
-                            current_path: path_string.to_string(),
+                            current_path: s.clone(),
+                        }
+                    } else {
+                        Msg::Open {
+                            path: PathBuf::from(s),
                         }
                     };
 
-                    button(&path_string, msg, s.exists()).render_split(
-                        &mut suggest_view,
-                        Side::Left,
-                        0.5,
-                    );
-
-                    // button(
-                    //     "copy",
-                    //     Msg::MetaPath {
-                    //         current_path: path_string.to_string(),
-                    //     },
-                    //     true,
-                    // )
-                    // .render_split(&mut suggest_view, Side::Right, 0.5);
+                    button(&s, msg, true).render_split(&mut suggest_view, Side::Left, 0.5);
                 }
             }
             Tab::Edit(id) => {
@@ -655,7 +637,7 @@ const TEXT_WEIGHT: f32 = 0.9;
 const NUM_SUGGESTIONS: usize = 16;
 const MAX_DIR_ENTRIES: usize = 1024;
 
-fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
+fn suggestions(current_path: &str) -> io::Result<Vec<String>> {
     if !current_path.starts_with('/') {
         // All paths must be absolute.
         return Ok(vec![]);
@@ -665,13 +647,23 @@ fn suggestions(current_path: &str) -> io::Result<Vec<PathBuf>> {
     let read = fs::read_dir(dir)?;
     let mut results: Vec<_> = read
         .filter_map(|r| r.ok())
-        .filter_map(|de| {
+        .filter(|de| {
             de.file_name()
                 .to_str()
-                .filter(|s| s.starts_with(file))
-                .map(|_| de.path())
+                .into_iter()
+                .any(|s| s.starts_with(file))
         })
         .take(MAX_DIR_ENTRIES)
+        .filter_map(|s| {
+            let path = s.path();
+            path.to_str().map(|s| {
+                let mut string = s.to_string();
+                if path.is_dir() {
+                    string.push('/');
+                }
+                string
+            })
+        })
         .collect();
 
     // NB: if this is slow, pull in the partial sort crate.
