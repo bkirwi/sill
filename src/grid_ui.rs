@@ -1,7 +1,7 @@
 use crate::{text_literal, Metrics, Vector2};
 use armrest::libremarkable::framebuffer::common::color;
 use armrest::libremarkable::framebuffer::FramebufferIO;
-use armrest::ui::{Cached, Canvas, Fragment, Side, TextFragment, View};
+use armrest::ui::{Cached, Canvas, Fragment, Side, View};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;

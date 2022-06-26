@@ -1,23 +1,23 @@
 use std::borrow::{Borrow, Cow};
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::fs::File;
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::rc::Rc;
-use std::{env, fs, io, mem, process, thread};
+use std::{env, fs, io, process, thread};
 
 use armrest::app;
 use armrest::app::{Applet, Component, Sender};
-use armrest::dollar::Points;
+
 use armrest::ink::Ink;
 use armrest::libremarkable::cgmath::Zero;
 use armrest::libremarkable::framebuffer::cgmath::Vector2;
 use armrest::libremarkable::framebuffer::common::{color, DISPLAYHEIGHT, DISPLAYWIDTH};
 use armrest::ui::{Canvas, Fragment, Side, Text, View, Widget};
-use clap::Arg;
+
 use once_cell::sync::Lazy;
 use xdg::BaseDirectories;
 
@@ -237,8 +237,8 @@ impl ShellTab {
             child,
             shell_output: TextWindow::new(
                 TextBuffer::empty(),
-                atlas.clone(),
-                metrics.clone(),
+                atlas,
+                metrics,
                 dimensions,
             ),
             history: Default::default(),
@@ -483,8 +483,8 @@ impl Widget for Editor {
                     0.0,
                 );
 
-                for (tab_id, tab) in &self.tabs {
-                    match &self.tabs[&tab_id] {
+                for (tab_id, _tab) in &self.tabs {
+                    match &self.tabs[tab_id] {
                         TabType::Text(tab) => {
                             let path_str = tab
                                 .path
@@ -511,7 +511,7 @@ impl Widget for Editor {
                                 0.5,
                             );
                         }
-                        TabType::Shell(shell_tab) => {
+                        TabType::Shell(_shell_tab) => {
                             let name = format!("Shell #{}", tab_id);
                             let tab_label =
                                 button(&name, Msg::SwitchTab { tab: Some(*tab_id) }, true);
@@ -565,7 +565,7 @@ impl Widget for Editor {
                 }
             }
             Tab::Edit { id } => {
-                match &self.tabs[&id] {
+                match &self.tabs[id] {
                     TabType::Text(text_tab) => {
                         // Run the line numbers down the margin!
                         let mut margin_view = view.split_off(Side::Left, self.left_margin());
@@ -574,7 +574,7 @@ impl Widget for Editor {
                         // TODO: calculate this from other metrics.
                         margin_view.split_off(Side::Top, 7);
                         for row in (text_tab.text.origin.0..).take(text_tab.text.dimensions.0) {
-                            let mut view =
+                            let view =
                                 margin_view.split_off(Side::Top, text_tab.text.grid_metrics.height);
                             let text = Text::literal(30, &*FONT, &format!("{}", row));
                             text.render_placed(view, 1.0, 1.0);
@@ -708,7 +708,7 @@ impl Editor {
     fn template_at(&mut self, coord: Coord) -> &mut Template {
         let (row, col) = coord;
         let row = row + self.template_offset;
-        let mut ct = &mut self.text_stuff.templates[row];
+        let ct = &mut self.text_stuff.templates[row];
         if col >= ct.templates.len() {
             ct.templates
                 .resize_with(col + 1, || Template::from_ink(Ink::new()));
@@ -733,7 +733,7 @@ impl Applet for Editor {
                             *suggested = suggestions(&path_window.buffer.content_string())
                                 .unwrap_or_default();
                         }
-                        Tab::Edit { id } => match self.tabs.get_mut(&id).unwrap() {
+                        Tab::Edit { id } => match self.tabs.get_mut(id).unwrap() {
                             TabType::Text(text_tab) => {
                                 text_tab.dirty = true;
                                 text_tab.text.ink_row(ink_type, &mut self.text_stuff);
@@ -894,7 +894,7 @@ impl Applet for Editor {
             }
             Msg::ShellInput {
                 id,
-                stderr,
+                stderr: _,
                 content,
             } => {
                 if let Some(TabType::Shell(shell_tab)) = self.tabs.get_mut(&id) {
@@ -917,7 +917,7 @@ impl Applet for Editor {
                         shell_tab.shell_output.frozen_until,
                         shell_tab.shell_output.buffer.end(),
                     );
-                    let mut command = buffer.content_string();
+                    let command = buffer.content_string();
                     dbg!(shell_tab.shell_output.frozen_until, &command);
                     if let Some(stdin) = &mut shell_tab.child.stdin {
                         stdin.write(command.as_bytes());
@@ -1030,16 +1030,6 @@ impl<'a, A: Widget> Widget for Spaced<'a, A> {
 
 fn main() {
     let mut app = app::App::new();
-
-    let args = clap::Command::new("armrest-editor")
-        .arg(Arg::new("file"))
-        .get_matches();
-
-    let file_string = if let Some(os_path) = args.value_of_os("file") {
-        std::fs::read_to_string(os_path).expect("Unable to read specified file!")
-    } else {
-        HELP_TEXT.to_string() // Unnecessary cost, but not a big deal?
-    };
 
     let template_path = BASE_DIRS
         .place_data_file(TEMPLATE_FILE)

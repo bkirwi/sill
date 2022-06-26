@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+
 
 type Coord = (usize, usize);
 
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_copy() {
-        let mut waistcoat = TextBuffer::from_string("waistcoat\n");
+        let waistcoat = TextBuffer::from_string("waistcoat\n");
         assert_eq!(
             "\n",
             waistcoat
