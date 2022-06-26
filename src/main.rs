@@ -21,6 +21,7 @@ use clap::Arg;
 use once_cell::sync::Lazy;
 use xdg::BaseDirectories;
 
+use crate::text_window::TextMessage;
 use font::*;
 use grid_ui::*;
 use hwr::*;
@@ -58,7 +59,6 @@ pub enum Msg {
         tab: Option<usize>,
     },
     Write {
-        row: usize,
         ink: Ink,
     },
     Erase {
@@ -129,10 +129,6 @@ impl Default for Selection {
     }
 }
 
-pub enum TextMessage {
-    Write(usize, Ink),
-}
-
 /// This stores data from a recent recognition attempt, and the number of times it was overwritten
 /// within the window we maintain. Idea being, if we have to go back and rewrite a char just after
 /// we wrote it, we probably guessed wrong and should use it as a template.
@@ -152,7 +148,6 @@ enum TabType {
 struct ShellTab {
     child: Child,
     shell_output: TextWindow,
-    command_window: TextWindow,
     history: VecDeque<TextBuffer>,
 }
 
@@ -161,6 +156,7 @@ impl ShellTab {
         id: usize,
         atlas: Rc<Atlas>,
         metrics: Metrics,
+        dimensions: Coord,
         sender: Sender<Msg>,
         working_dir: PathBuf,
     ) -> io::Result<ShellTab> {
@@ -173,11 +169,11 @@ impl ShellTab {
                 // that won't work in our captive shell. We may eventually want
                 // to read the standard files and just override some behaviour.
                 "--norc",
-                // Disables job control, which relies on Real Terminal Features.
-                "+m",
                 // Run in interactive mode. This does ~many things, like
                 // enabling the prompt, and gets us closer to a normal shell.
                 "-i",
+                // Disables job control, which relies on Real Terminal Features.
+                "+m",
             ])
             .current_dir(&working_dir)
             .stdin(Stdio::piped())
@@ -243,9 +239,8 @@ impl ShellTab {
                 TextBuffer::empty(),
                 atlas.clone(),
                 metrics.clone(),
-                (36, 60),
+                dimensions,
             ),
-            command_window: TextWindow::new(TextBuffer::empty(), atlas, metrics, (3, 50)),
             history: Default::default(),
         })
     }
@@ -412,7 +407,9 @@ impl Widget for Editor {
                             Side::Left,
                             0.5,
                         );
-                        header.leave_rest_blank();
+
+                        Spaced(40, &[button("submit", Msg::SubmitShell { id }, true)])
+                            .render_placed(header, 1.0, 0.5);
                     }
                 };
             }
@@ -442,7 +439,7 @@ impl Widget for Editor {
                 path_window
                     .borrow()
                     .map(|message| match message {
-                        TextMessage::Write(row, ink) => Msg::Write { row, ink },
+                        TextMessage::Write(ink) => Msg::Write { ink },
                     })
                     .render_split(&mut view, Side::Top, 0.0);
 
@@ -588,7 +585,7 @@ impl Widget for Editor {
                             .text
                             .borrow()
                             .map(|message| match message {
-                                TextMessage::Write(row, ink) => Msg::Write { row, ink },
+                                TextMessage::Write(ink) => Msg::Write { ink },
                             })
                             .render_split(&mut view, Side::Top, 0.0);
 
@@ -603,32 +600,14 @@ impl Widget for Editor {
                         text.render_placed(view, 0.0, 0.4);
                     }
                     TabType::Shell(shell_tab) => {
+                        view.split_off(Side::Left, self.left_margin());
                         shell_tab
                             .shell_output
                             .borrow()
-                            .map(|message| Msg::Erase {
-                                // FIXME: sorry!
-                                row: 0,
-                                ink: Ink::new(),
-                            })
-                            .render_split(&mut view, Side::Top, 0.5);
-
-                        view.split_off(Side::Left, self.left_margin());
-                        view.split_off(Side::Right, self.right_margin());
-
-                        shell_tab
-                            .command_window
-                            .borrow()
                             .map(|message| match message {
-                                TextMessage::Write(row, ink) => Msg::Write { row, ink },
+                                TextMessage::Write(ink) => Msg::Write { ink },
                             })
-                            .render_split(&mut view, Side::Left, 0.5);
-
-                        button("submit", Msg::SubmitShell { id: *id }, true).render_split(
-                            &mut view,
-                            Side::Right,
-                            0.5,
-                        )
+                            .render_split(&mut view, Side::Top, 0.0);
                     }
                 }
             }
@@ -653,14 +632,8 @@ impl Widget for Editor {
                     view,
                     &self.metrics,
                     (height, width),
-                    |row, view| {
-                        let row = row + self.template_offset;
-                        view.handlers()
-                            .map_region(|mut r| {
-                                r.top_left.x -= GRID_BORDER;
-                                r
-                            })
-                            .on_ink(|ink| Msg::Write { row, ink });
+                    |view| {
+                        view.handlers().pad(8).on_ink(|ink| Msg::Write { ink });
                     },
                     |row, col, mut template_view| {
                         let row = self.template_offset + row;
@@ -731,6 +704,17 @@ impl Editor {
         self.next_tab_id += 1;
         id
     }
+
+    fn template_at(&mut self, coord: Coord) -> &mut Template {
+        let (row, col) = coord;
+        let row = row + self.template_offset;
+        let mut ct = &mut self.text_stuff.templates[row];
+        if col >= ct.templates.len() {
+            ct.templates
+                .resize_with(col + 1, || Template::from_ink(Ink::new()));
+        }
+        &mut ct.templates[col]
+    }
 }
 
 impl Applet for Editor {
@@ -738,62 +722,51 @@ impl Applet for Editor {
 
     fn update(&mut self, message: Self::Message) -> Option<Self::Upstream> {
         match message {
-            Msg::Write { row, ink } => match &mut self.tab {
-                Tab::Meta {
-                    path_window,
-                    suggested,
-                } => {
-                    path_window.ink_row(ink, row, &mut self.text_stuff);
-                    *suggested =
-                        suggestions(&path_window.buffer.content_string()).unwrap_or_default();
-                }
-                Tab::Edit { id } => match self.tabs.get_mut(&id).unwrap() {
-                    TabType::Text(text_tab) => {
-                        text_tab.dirty = true;
-                        text_tab.text.ink_row(ink, row, &mut self.text_stuff);
-                    }
-                    TabType::Shell(shell_tab) => {
-                        shell_tab
-                            .command_window
-                            .ink_row(ink, row, &mut self.text_stuff);
-                    }
-                },
-                Tab::Template => {
-                    let ink_type = InkType::classify(&self.metrics, ink);
-                    if let Some(char_data) = self.text_stuff.templates.get_mut(row) {
-                        match ink_type {
+            Msg::Write { ink, .. } => {
+                if let Some(ink_type) = InkType::classify(&self.metrics, ink) {
+                    match &mut self.tab {
+                        Tab::Meta {
+                            path_window,
+                            suggested,
+                        } => {
+                            path_window.ink_row(ink_type, &mut self.text_stuff);
+                            *suggested = suggestions(&path_window.buffer.content_string())
+                                .unwrap_or_default();
+                        }
+                        Tab::Edit { id } => match self.tabs.get_mut(&id).unwrap() {
+                            TabType::Text(text_tab) => {
+                                text_tab.dirty = true;
+                                text_tab.text.ink_row(ink_type, &mut self.text_stuff);
+                            }
+                            TabType::Shell(shell_tab) => {
+                                shell_tab
+                                    .shell_output
+                                    .ink_row(ink_type, &mut self.text_stuff);
+                            }
+                        },
+                        Tab::Template => match ink_type {
                             InkType::Strikethrough { start, end } => {
-                                let line_len = char_data.templates.len();
-                                for t in
-                                    &mut char_data.templates[start.min(line_len)..end.min(line_len)]
-                                {
-                                    t.serialized.clear();
-                                    t.ink.clear();
+                                if start.0 == end.0 {
+                                    for col in start.1..end.1 {
+                                        self.template_at((start.0, col)).clear();
+                                    }
                                 }
                             }
-                            InkType::Scratch { col } => {
-                                if let Some(prev) = char_data.templates.get_mut(col) {
-                                    prev.ink.clear();
-                                    prev.serialized.clear();
-                                }
+                            InkType::Scratch { at } => {
+                                self.template_at(at).clear();
                             }
                             InkType::Glyphs { tokens } => {
-                                for (col, ink) in tokens {
-                                    if col >= char_data.templates.len() {
-                                        char_data
-                                            .templates
-                                            .resize_with(col + 1, || Template::from_ink(Ink::new()))
-                                    }
-                                    let mut prev = &mut char_data.templates[col];
-                                    prev.ink.append(ink, 0.5);
-                                    prev.serialized = prev.ink.to_string();
+                                for (coord, ink) in tokens {
+                                    let tpl = self.template_at(coord);
+                                    tpl.ink.append(ink, 0.5);
+                                    tpl.serialized = tpl.ink.to_string();
                                 }
                             }
                             _ => {}
-                        }
+                        },
                     }
                 }
-            },
+            }
             Msg::SwitchTab { tab } => {
                 self.tab = match tab {
                     None => Tab::Template,
@@ -912,6 +885,7 @@ impl Applet for Editor {
                     id,
                     self.atlas.clone(),
                     self.metrics.clone(),
+                    self.max_dimensions(),
                     self.sender.clone(),
                     working_dir,
                 )
@@ -928,19 +902,25 @@ impl Applet for Editor {
                         .shell_output
                         .buffer
                         .append(TextBuffer::from_string(&content));
+
+                    shell_tab.shell_output.undos.clear();
+                    shell_tab.shell_output.frozen_until = shell_tab.shell_output.buffer.end();
                 }
             }
             Msg::SubmitShell { id } => {
                 if let Some(TabType::Shell(shell_tab)) = self.tabs.get_mut(&id) {
-                    let buffer = mem::take(&mut shell_tab.command_window.buffer);
-                    let mut string_contents = buffer.content_string();
-                    string_contents.push('\n');
+                    shell_tab.shell_output.replace(Replace::splice(
+                        shell_tab.shell_output.buffer.end(),
+                        TextBuffer::from_string("\n"),
+                    ));
+                    let buffer = shell_tab.shell_output.buffer.copy(
+                        shell_tab.shell_output.frozen_until,
+                        shell_tab.shell_output.buffer.end(),
+                    );
+                    let mut command = buffer.content_string();
+                    dbg!(shell_tab.shell_output.frozen_until, &command);
                     if let Some(stdin) = &mut shell_tab.child.stdin {
-                        shell_tab
-                            .shell_output
-                            .buffer
-                            .append(TextBuffer::from_string(&string_contents));
-                        stdin.write(string_contents.as_bytes());
+                        stdin.write(command.as_bytes());
                     }
                     shell_tab.history.push_back(buffer);
                 }
@@ -1047,8 +1027,6 @@ impl<'a, A: Widget> Widget for Spaced<'a, A> {
         }
     }
 }
-
-const NUM_RECENT_RECOGNITIONS: usize = 16;
 
 fn main() {
     let mut app = app::App::new();

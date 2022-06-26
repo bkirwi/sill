@@ -1,3 +1,4 @@
+use crate::grid_ui::Coord;
 use crate::{Metrics, Vector2};
 use armrest::ink::Ink;
 use std::collections::HashMap;
@@ -16,15 +17,13 @@ fn is_erase(ink: &Ink) -> bool {
 #[derive(Debug)]
 pub enum InkType {
     // A horizontal strike through the current line: typically, delete.
-    Strikethrough { start: usize, end: usize },
+    Strikethrough { start: Coord, end: Coord },
     // A scratch-out of a single cell: typically, replace with whitespace.
-    Scratch { col: usize },
+    Scratch { at: Coord },
     // Something that appears to be one or more characters.
-    Glyphs { tokens: HashMap<usize, Ink> },
+    Glyphs { tokens: Vec<(Coord, Ink)> },
     // A line between characters; typically represents an insertion point.
-    Carat { col: usize, ink: Ink },
-    // None of the above: typically, ignore.
-    Junk,
+    Carat { at: Coord, ink: Ink },
 }
 
 impl InkType {
@@ -98,10 +97,13 @@ impl InkType {
         index_to_ink
     }
 
-    pub fn classify(metrics: &Metrics, ink: Ink) -> InkType {
+    pub fn classify(metrics: &Metrics, ink: Ink) -> Option<InkType> {
         if ink.len() == 0 {
-            return InkType::Junk;
+            return None;
         }
+
+        let row = (ink.centroid().y / metrics.height as f32).max(0.0) as usize;
+        let ink = ink.translate(-Vector2::new(0.0, row as f32 * metrics.height as f32));
 
         let min_x = ink.x_range.min / metrics.width as f32;
         let max_x = ink.x_range.max / metrics.width as f32;
@@ -111,14 +113,16 @@ impl InkType {
         // Roughly: a strikethrough should be a single stroke that's mostly horizontal.
         if (max_x - min_x) > 1.5 && ink.strokes().count() == 1 {
             if ink.ink_len() / (ink.x_range.max - ink.x_range.min) < 1.2 {
-                return InkType::Strikethrough {
-                    start: (min_x.round().max(0.0) as usize),
-                    end: max_x.round().max(0.0) as usize,
-                };
+                let start = min_x.round().max(0.0) as usize;
+                let end = max_x.round().max(0.0) as usize;
+                return Some(InkType::Strikethrough {
+                    start: (row, start),
+                    end: (row, end),
+                });
             } else {
                 // TODO: could just be a single char!
                 // Maybe fall through and handle this case as part of char splitting?
-                return InkType::Junk;
+                return None;
             }
         }
 
@@ -132,24 +136,27 @@ impl InkType {
             && (center - center.round()).abs() < 0.3
             && center.round() >= 0.0
         {
-            return InkType::Carat {
-                col: center.round() as usize,
+            return Some(InkType::Carat {
+                at: (row, center.round() as usize),
                 ink: ink.translate(-Vector2::new(center.round() * metrics.width as f32, 0.0)),
-            };
+            });
         }
 
         if center < 0.0 {
             // Out of bounds!
-            return InkType::Junk;
+            return None;
         }
 
         if is_erase(&ink) {
             let col = center as usize;
-            return InkType::Scratch { col };
+            return Some(InkType::Scratch { at: (row, col) });
         }
 
-        InkType::Glyphs {
-            tokens: Self::tokenize(metrics, &ink),
-        }
+        let mut tokens: Vec<_> = Self::tokenize(metrics, &ink)
+            .into_iter()
+            .map(|(c, v)| ((row, c), v))
+            .collect();
+        tokens.sort_by_key(|(k, _)| *k);
+        Some(InkType::Glyphs { tokens })
     }
 }

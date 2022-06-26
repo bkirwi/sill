@@ -117,7 +117,7 @@ impl TextBuffer {
             vec![self.contents[from_row][from_col..until_col].to_vec()]
         } else {
             let mut contents = vec![self.contents[from_row][from_col..].to_vec()];
-            contents.extend(self.contents[(from_row + 1)..=until_row].iter().cloned());
+            contents.extend(self.contents[(from_row + 1)..until_row].iter().cloned());
             contents.push(self.contents[until_row][..until_col].to_vec());
             contents
         };
@@ -174,5 +174,32 @@ impl Replace {
             until: (row, col + 1),
             content: TextBuffer::from_string(&c.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_replace_newline() {
+        let mut waistcoat = TextBuffer::from_string("waistcoat");
+        let newline = TextBuffer::from_string("\n");
+        let insert = Replace::splice((0, 5), newline);
+        let undo = waistcoat.replace(insert);
+        assert_eq!(waistcoat.content_string().as_str(), "waist\ncoat");
+        assert_eq!(undo.content.content_string().as_str(), "");
+    }
+
+    #[test]
+    fn test_copy() {
+        let mut waistcoat = TextBuffer::from_string("waistcoat\n");
+        assert_eq!(
+            "\n",
+            waistcoat
+                .copy((0, 20), waistcoat.end())
+                .content_string()
+                .as_str()
+        );
     }
 }

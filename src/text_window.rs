@@ -7,6 +7,12 @@ use std::collections::VecDeque;
 use std::mem;
 use std::rc::Rc;
 
+const NUM_RECENT_RECOGNITIONS: usize = 16;
+
+pub enum TextMessage {
+    Write(Ink),
+}
+
 #[derive(Clone)]
 pub struct TextWindow {
     pub buffer: TextBuffer,
@@ -15,6 +21,7 @@ pub struct TextWindow {
     selection: Selection,
     pub dimensions: Coord,
     pub origin: Coord,
+    pub frozen_until: Coord,
     pub undos: VecDeque<Replace>,
     tentative_recognitions: VecDeque<Recognition>,
 }
@@ -33,6 +40,7 @@ impl TextWindow {
             selection: Selection::Normal,
             dimensions,
             origin: (0, 0),
+            frozen_until: (0, 0),
             undos: VecDeque::new(),
             tentative_recognitions: VecDeque::new(),
         }
@@ -104,7 +112,18 @@ impl TextWindow {
         }
     }
 
-    pub fn replace(&mut self, replace: Replace) {
+    pub fn replace(&mut self, mut replace: Replace) {
+        // Avoid editing the frozen section of the buffer.
+        if self.frozen_until > replace.until {
+            return;
+        } else if self.frozen_until >= replace.from {
+            let after = replace
+                .content
+                .split_off(diff_coord(self.frozen_until, replace.from));
+            replace.from = self.frozen_until;
+            replace.content = after;
+        }
+
         let from = replace.from;
         let old_until = replace.until;
         let undo = self.buffer.replace(replace);
@@ -130,29 +149,27 @@ impl TextWindow {
         }
     }
 
-    pub fn ink_row(&mut self, ink: Ink, row: usize, text_stuff: &mut TextStuff) {
-        let ink_type = InkType::classify(&self.grid_metrics, ink);
+    fn relative(&self, coord: Coord) -> Coord {
+        (self.origin.0 + coord.0, self.origin.1 + coord.1)
+    }
+
+    pub fn ink_row(&mut self, ink_type: InkType, text_stuff: &mut TextStuff) {
         match ink_type {
-            InkType::Scratch { col } => {
-                let col = self.origin.1 + col;
-                self.replace(Replace::write((row, col), ' '));
-                self.tentative_recognitions
-                    .retain(|r| r.coord != (row, col));
+            InkType::Scratch { at } => {
+                let coord = self.relative(at);
+                self.replace(Replace::write(coord, ' '));
             }
             InkType::Glyphs { tokens } => {
                 if matches!(self.selection, Selection::Normal) {
-                    let mut tokens: Vec<_> = tokens.into_iter().collect();
-                    tokens.sort_by_key(|(col, _)| *col);
                     // TODO: a little coalescing perhaps?
                     for (col, ink) in tokens {
-                        let col = col + self.origin.1;
+                        let coord = self.relative(col);
                         if let Some(c) = text_stuff
                             .char_recognizer
                             .best_match(&ink_to_points(&ink, &self.grid_metrics), f32::MAX)
                         {
-                            let coord = (row, col);
                             self.replace(Replace::write(coord, c));
-                            if let Some(r) = self.record_recognition((row, col), ink, c) {
+                            if let Some(r) = self.record_recognition(coord, ink, c) {
                                 if r.overwrites > 0 {
                                     if let Some(t) = text_stuff
                                         .templates
@@ -208,20 +225,12 @@ impl TextWindow {
                 }
             }
             InkType::Strikethrough { start, end } => {
-                let start = self.origin.1 + start;
-                let end = self.origin.1 + end;
-                self.replace(Replace::remove((row, start), (row, end)));
-                self.tentative_recognitions
-                    .retain(|r| r.coord < (row, start));
+                self.replace(Replace::remove(self.relative(start), self.relative(end)));
             }
-            InkType::Carat { col, ink } => {
-                let col = self.origin.1 + col;
-                self.carat(Carat {
-                    coord: (row, col),
-                    ink,
-                });
+            InkType::Carat { at, ink } => {
+                let coord = self.relative(at);
+                self.carat(Carat { coord, ink });
             }
-            InkType::Junk => {}
         };
     }
 }
@@ -242,14 +251,8 @@ impl Widget for TextWindow {
             view,
             &self.grid_metrics,
             self.dimensions,
-            |row_offset, view| {
-                let row = row_origin + row_offset;
-                view.handlers()
-                    .map_region(|mut r| {
-                        r.top_left.x -= GRID_BORDER;
-                        r
-                    })
-                    .on_ink(|i| TextMessage::Write(row, i));
+            |view| {
+                view.handlers().pad(8).on_ink(TextMessage::Write);
             },
             |row_offset, col_offset, mut view| {
                 let row = row_origin + row_offset;
@@ -257,7 +260,7 @@ impl Widget for TextWindow {
                 let coord = (row, col);
 
                 let (underline, draw_guidelines) = match &self.selection {
-                    Selection::Normal => (false, true),
+                    Selection::Normal => (false, (row, col) >= self.frozen_until),
                     Selection::Single { carat } => {
                         if coord == carat.coord {
                             view.annotate(&carat.ink);

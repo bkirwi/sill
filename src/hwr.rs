@@ -96,6 +96,11 @@ impl Template {
         let ink = Ink::from_string(&serialized);
         Template { ink, serialized }
     }
+
+    pub fn clear(&mut self) {
+        self.ink.clear();
+        self.serialized.clear();
+    }
 }
 
 /// All the templates that correspond to a particular char, plus any metadata.

@@ -160,7 +160,7 @@ pub fn draw_grid<T>(
     mut view: View<T>,
     metrics: &Metrics,
     dimensions: Coord,
-    mut on_row: impl FnMut(usize, &mut View<T>),
+    mut on_grid: impl FnMut(&mut View<T>),
     mut draw_cell: impl FnMut(usize, usize, View<T>),
 ) {
     let (rows, cols) = dimensions;
@@ -203,9 +203,9 @@ pub fn draw_grid<T>(
             width: metrics.width,
             side: Side::Bottom,
         });
+    on_grid(&mut view);
     for row in 0..rows {
         let mut line_view = view.split_off(Side::Top, metrics.height);
-        on_row(row, &mut line_view);
         for col in 0..cols {
             let char_view = line_view.split_off(Side::Left, metrics.width);
             draw_cell(row, col, char_view);
