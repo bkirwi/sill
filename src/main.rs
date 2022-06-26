@@ -795,6 +795,12 @@ impl Applet for Editor {
                 }
             },
             Msg::Open { path } => {
+                // If we reopen meta, we're likely to want another file in the same dir.
+                if let Some(dir) = path.parent() {
+                    self.meta.path_window.buffer = TextBuffer::from_string(&dir.to_string_lossy());
+                    self.meta.reload_suggestions();
+                }
+
                 if let Some(file_contents) = self.report_error(fs::read_to_string(&path)) {
                     let id = self.take_id();
                     self.tabs.insert(
