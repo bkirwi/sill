@@ -184,40 +184,43 @@ impl TextWindow {
                     }
                 } else {
                     let ink = tokens.into_iter().next().unwrap().1;
-                    match text_stuff
+                    let best_match = text_stuff
                         .big_recognizer
-                        .best_match(&Points::normalize(&ink), f32::MAX)
-                    {
-                        Some('X') => {
-                            if let Selection::Range { start, end } = &self.selection {
-                                text_stuff.clipboard =
-                                    Some(self.buffer.copy(start.coord, end.coord));
-                                self.replace(Replace::remove(start.coord, end.coord));
-                            }
+                        .best_match(&Points::normalize(&ink), f32::MAX);
+                    let (start, end) = match &self.selection {
+                        Selection::Normal => unreachable!("checked in matches! above."),
+                        Selection::Single { carat } => (carat.coord, carat.coord),
+                        Selection::Range { start, end } => (start.coord, end.coord),
+                    };
+                    match best_match {
+                        Some('X') if start != end => {
+                            text_stuff.clipboard = Some(self.buffer.copy(start, end));
+                            self.replace(Replace::remove(start, end));
                             self.selection = Selection::Normal;
                         }
-                        Some('C') => {
-                            if let Selection::Range { start, end } = &self.selection {
-                                text_stuff.clipboard =
-                                    Some(self.buffer.copy(start.coord, end.coord));
-                            }
+                        Some('C') if start != end => {
+                            text_stuff.clipboard = Some(self.buffer.copy(start, end));
                             self.selection = Selection::Normal;
                         }
                         Some('V') => {
-                            if let Selection::Single { carat } = &self.selection {
-                                if let Some(buffer) = text_stuff.clipboard.take() {
-                                    self.replace(Replace::splice(carat.coord, buffer));
-                                }
+                            if let Some(buffer) = &text_stuff.clipboard {
+                                self.replace(Replace {
+                                    from: start,
+                                    until: end,
+                                    content: buffer.clone(),
+                                });
                             }
                             self.selection = Selection::Normal;
                         }
-                        Some('S') => {
-                            if let Selection::Range { start, end } = &self.selection {
-                                self.replace(Replace::splice(
-                                    start.coord,
-                                    TextBuffer::padding(diff_coord(start.coord, end.coord)),
-                                ));
-                            }
+                        Some('S') | Some('>') => {
+                            self.replace(Replace::splice(
+                                start,
+                                TextBuffer::padding(diff_coord(start, end)),
+                            ));
+                            self.selection = Selection::Normal;
+                        }
+                        Some('<') => {
+                            self.replace(Replace::remove(start, end));
                             self.selection = Selection::Normal;
                         }
                         _ => {}

@@ -536,7 +536,7 @@ impl Widget for Editor {
                         }
                     };
 
-                    button(&s, msg, true).render_split(&mut suggest_view, Side::Left, 0.5);
+                    button(s, msg, true).render_split(&mut suggest_view, Side::Left, 0.5);
                 }
             }
             Tab::Edit(id) => {
@@ -910,9 +910,10 @@ impl Applet for Editor {
                         shell_tab.shell_output.buffer.end(),
                     );
                     let command = buffer.content_string();
-                    dbg!(shell_tab.shell_output.frozen_until, &command);
                     if let Some(stdin) = &mut shell_tab.child.stdin {
-                        stdin.write(command.as_bytes());
+                        if let Err(e) = stdin.write(command.as_bytes()) {
+                            self.error_string = e.to_string();
+                        }
                     }
                     shell_tab.history.push_back(buffer);
                 }
@@ -924,7 +925,7 @@ impl Applet for Editor {
 
     fn current_route(&self) -> &str {
         match self.tab {
-            Tab::Meta { .. } => "meta",
+            Tab::Meta => "meta",
             Tab::Edit { .. } => "edit",
             Tab::Template => "template",
         }
@@ -1029,13 +1030,13 @@ fn main() {
 
     let metrics = Metrics::new(DEFAULT_CHAR_HEIGHT);
 
-    let atlas = Rc::new(Atlas::new(metrics.clone()));
+    let atlas = Rc::new(Atlas::new());
 
     let max_dimensions = max_dimensions(&metrics);
 
     let meta_path = env::var_os("HOME")
-        .and_then(|mut os| full_path(Path::new(&os)))
-        .unwrap_or("/".to_string());
+        .and_then(|os| full_path(Path::new(&os)))
+        .unwrap_or_else(|| "/".to_string());
 
     let meta = Meta::new(TextWindow::new(
         TextBuffer::from_string(&meta_path),

@@ -132,14 +132,12 @@ impl Fragment for GridCell {
 }
 
 pub struct Atlas {
-    metrics: Metrics,
     cache: RefCell<HashMap<GridCell, Rc<Cached<GridCell>>>>,
 }
 
 impl Atlas {
-    pub fn new(metrics: Metrics) -> Atlas {
+    pub fn new() -> Atlas {
         Atlas {
-            metrics,
             cache: RefCell::new(Default::default()),
         }
     }
