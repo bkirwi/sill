@@ -52,47 +52,24 @@ const HELP_TEXT: &str = include_str!("../README.md");
 
 #[derive(Clone)]
 pub enum Msg {
-    MetaPath {
-        current_path: String,
-    },
-    SwitchTab {
-        tab: Tab,
-    },
-    Write {
-        ink: Ink,
-    },
-    Erase {
-        row: usize,
-        ink: Ink,
-    },
-    Swipe {
-        towards: Side,
-    },
-    Save {
-        id: usize,
-    },
-    Open {
-        path: PathBuf,
-    },
-    Undo {
-        id: usize,
-    },
-    OpenShell {
-        working_dir: PathBuf,
-    },
-    ShellInput {
-        id: usize,
-        stderr: bool,
-        content: String,
-    },
-    SubmitShell {
-        id: usize,
-    },
-    SaveAs {
-        id: usize,
-        path: PathBuf,
-    },
+    MetaPath { current_path: String },
+    SwitchTab { tab: Tab },
+    Write { ink: Ink },
+    Erase { ink: Ink },
+    Swipe { towards: Side },
+    Open { path: PathBuf },
+    OpenShell { working_dir: PathBuf },
+    Tab { id: usize, msg: TabMsg },
     New,
+}
+
+#[derive(Clone)]
+pub enum TabMsg {
+    ShellInput { stderr: bool, content: String },
+    SubmitShell,
+    SaveAs { path: PathBuf },
+    Undo,
+    Save,
 }
 
 pub struct Meta {
@@ -227,10 +204,12 @@ impl ShellTab {
                     // replacement char or to wait for more input.
                     let contents = String::from_utf8_lossy(&buffer[..read]);
 
-                    sender.send(Msg::ShellInput {
+                    sender.send(Msg::Tab {
                         id,
-                        stderr,
-                        content: contents.to_string(),
+                        msg: TabMsg::ShellInput {
+                            stderr,
+                            content: contents.to_string(),
+                        },
                     });
                 }
                 eprintln!("Thread shutting down!");
@@ -375,10 +354,20 @@ impl Widget for Editor {
                         Spaced(
                             40,
                             &[
-                                button("undo", Msg::Undo { id }, !text_tab.text.undos.is_empty()),
+                                button(
+                                    "undo",
+                                    Msg::Tab {
+                                        id,
+                                        msg: TabMsg::Undo,
+                                    },
+                                    !text_tab.text.undos.is_empty(),
+                                ),
                                 button(
                                     "save",
-                                    Msg::Save { id },
+                                    Msg::Tab {
+                                        id,
+                                        msg: TabMsg::Save,
+                                    },
                                     text_tab.path.is_some() && text_tab.dirty,
                                 ),
                             ],
@@ -393,8 +382,18 @@ impl Widget for Editor {
                             0.5,
                         );
 
-                        Spaced(40, &[button("submit", Msg::SubmitShell { id }, true)])
-                            .render_placed(header, 1.0, 0.5);
+                        Spaced(
+                            40,
+                            &[button(
+                                "submit",
+                                Msg::Tab {
+                                    id,
+                                    msg: TabMsg::SubmitShell,
+                                },
+                                true,
+                            )],
+                        )
+                        .render_placed(header, 1.0, 0.5);
                     }
                 };
             }
@@ -487,11 +486,13 @@ impl Widget for Editor {
 
                             button(
                                 "save as",
-                                Msg::SaveAs {
+                                Msg::Tab {
                                     id: *tab_id,
-                                    path: written_path.clone(),
+                                    msg: TabMsg::SaveAs {
+                                        path: written_path.clone(),
+                                    },
                                 },
-                                true,
+                                !written_path.exists(),
                             )
                             .render_split(
                                 &mut tab_view,
@@ -818,20 +819,6 @@ impl Applet for Editor {
                     self.tab = Tab::Edit(id);
                 }
             }
-            Msg::SaveAs { id, path } => {
-                if !path.exists() && path.parent().iter().any(|p| p.is_dir()) {
-                    match self.tabs.get_mut(&id).unwrap() {
-                        TabType::Text(tab) => {
-                            tab.path = Some(path);
-                            let saved = tab.save();
-                            if self.report_error(saved).is_some() {
-                                self.tab = Tab::Edit(id)
-                            };
-                        }
-                        _ => {}
-                    }
-                }
-            }
             Msg::New => {
                 // TODO: thread a path through here from meta.
                 let id = self.take_id();
@@ -850,19 +837,6 @@ impl Applet for Editor {
                 );
                 self.tab = Tab::Edit(id)
             }
-            Msg::Undo { id } => match self.tabs.get_mut(&id).unwrap() {
-                TabType::Text(text_tab) => {
-                    text_tab.text.undo();
-                }
-                _ => {}
-            },
-            Msg::Save { id } => match self.tabs.get_mut(&id).unwrap() {
-                TabType::Text(text_tab) => {
-                    let result = text_tab.save();
-                    self.report_error(result);
-                }
-                _ => {}
-            },
             Msg::MetaPath { current_path } => {
                 self.meta.path_window.buffer = TextBuffer::from_string(&current_path);
                 self.meta.reload_suggestions();
@@ -884,38 +858,56 @@ impl Applet for Editor {
                 self.tabs.insert(id, TabType::Shell(shell));
                 self.tab = Tab::Edit(id);
             }
-            Msg::ShellInput {
-                id,
-                stderr: _,
-                content,
-            } => {
-                if let Some(TabType::Shell(shell_tab)) = self.tabs.get_mut(&id) {
-                    shell_tab
-                        .shell_output
-                        .buffer
-                        .append(TextBuffer::from_string(&content));
+            Msg::Tab { id, msg } => {
+                if let Some(tab) = self.tabs.get_mut(&id) {
+                    match (msg, tab) {
+                        (TabMsg::ShellInput { stderr: _, content }, TabType::Shell(shell_tab)) => {
+                            shell_tab
+                                .shell_output
+                                .buffer
+                                .append(TextBuffer::from_string(&content));
 
-                    shell_tab.shell_output.undos.clear();
-                    shell_tab.shell_output.frozen_until = shell_tab.shell_output.buffer.end();
-                }
-            }
-            Msg::SubmitShell { id } => {
-                if let Some(TabType::Shell(shell_tab)) = self.tabs.get_mut(&id) {
-                    shell_tab.shell_output.replace(Replace::splice(
-                        shell_tab.shell_output.buffer.end(),
-                        TextBuffer::from_string("\n"),
-                    ));
-                    let buffer = shell_tab.shell_output.buffer.copy(
-                        shell_tab.shell_output.frozen_until,
-                        shell_tab.shell_output.buffer.end(),
-                    );
-                    let command = buffer.content_string();
-                    if let Some(stdin) = &mut shell_tab.child.stdin {
-                        if let Err(e) = stdin.write(command.as_bytes()) {
-                            self.error_string = e.to_string();
+                            shell_tab.shell_output.undos.clear();
+                            shell_tab.shell_output.frozen_until =
+                                shell_tab.shell_output.buffer.end();
                         }
+                        (TabMsg::SubmitShell, TabType::Shell(shell_tab)) => {
+                            shell_tab.shell_output.replace(Replace::splice(
+                                shell_tab.shell_output.buffer.end(),
+                                TextBuffer::from_string("\n"),
+                            ));
+                            let buffer = shell_tab.shell_output.buffer.copy(
+                                shell_tab.shell_output.frozen_until,
+                                shell_tab.shell_output.buffer.end(),
+                            );
+                            let command = buffer.content_string();
+                            if let Some(stdin) = &mut shell_tab.child.stdin {
+                                if let Err(e) = stdin.write(command.as_bytes()) {
+                                    self.error_string = e.to_string();
+                                }
+                            }
+                            shell_tab.history.push_back(buffer);
+                        }
+                        (TabMsg::SaveAs { path }, TabType::Text(text_tab)) => {
+                            if !path.exists() && path.parent().iter().any(|p| p.is_dir()) {
+                                text_tab.path = Some(path);
+                                let saved = text_tab.save();
+                                if self.report_error(saved).is_some() {
+                                    self.tab = Tab::Edit(id)
+                                };
+                            }
+                        }
+                        (TabMsg::Undo, TabType::Text(text_tab)) => {
+                            text_tab.text.undo();
+                        }
+                        (TabMsg::Save, TabType::Text(text_tab)) => {
+                            let result = text_tab.save();
+                            self.report_error(result);
+                        }
+                        _ => {}
                     }
-                    shell_tab.history.push_back(buffer);
+                } else {
+                    // TODO: log?
                 }
             }
         }
