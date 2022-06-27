@@ -50,6 +50,9 @@ const TEMPLATE_FILE: &str = "templates.json";
 
 const HELP_TEXT: &str = include_str!("../README.md");
 
+static APP_NAME: Lazy<String> =
+    Lazy::new(|| format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
+
 #[derive(Clone)]
 pub enum Msg {
     MetaPath { current_path: String },
@@ -333,7 +336,7 @@ impl Widget for Editor {
 
         match self.tab {
             Tab::Meta { .. } => {
-                let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, "armrest-edit v0.0.1");
+                let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, &*APP_NAME);
                 head_text.render_placed(header, 0.0, 0.5);
             }
             Tab::Edit(id) => {
@@ -700,6 +703,24 @@ impl Editor {
         }
         &mut ct.templates[col]
     }
+
+    fn new_text_tab(&mut self, path: Option<PathBuf>, contents: TextBuffer) {
+        let id = self.take_id();
+        self.tabs.insert(
+            id,
+            TabType::Text(TextTab {
+                path,
+                text: TextWindow::new(
+                    contents,
+                    self.atlas.clone(),
+                    self.metrics.clone(),
+                    self.max_dimensions(),
+                ),
+                dirty: false,
+            }),
+        );
+        self.tab = Tab::Edit(id)
+    }
 }
 
 impl Applet for Editor {
@@ -802,46 +823,13 @@ impl Applet for Editor {
                 }
 
                 if let Some(file_contents) = self.report_error(fs::read_to_string(&path)) {
-                    let id = self.take_id();
-                    self.tabs.insert(
-                        id,
-                        TabType::Text(TextTab {
-                            path: Some(path),
-                            dirty: false,
-                            text: TextWindow::new(
-                                TextBuffer::from_string(&file_contents),
-                                self.atlas.clone(),
-                                self.metrics.clone(),
-                                self.max_dimensions(),
-                            ),
-                        }),
-                    );
-                    self.tab = Tab::Edit(id);
+                    self.new_text_tab(Some(path), TextBuffer::from_string(&file_contents));
                 }
             }
-            Msg::New => {
-                // TODO: thread a path through here from meta.
-                let id = self.take_id();
-                self.tabs.insert(
-                    id,
-                    TabType::Text(TextTab {
-                        path: None,
-                        text: TextWindow::new(
-                            TextBuffer::empty(),
-                            self.atlas.clone(),
-                            self.metrics.clone(),
-                            self.max_dimensions(),
-                        ),
-                        dirty: false,
-                    }),
-                );
-                self.tab = Tab::Edit(id)
-            }
+            Msg::New => self.new_text_tab(None, TextBuffer::empty()),
             Msg::MetaPath { current_path } => {
                 self.meta.path_window.buffer = TextBuffer::from_string(&current_path);
                 self.meta.reload_suggestions();
-
-                // Probably redundant
                 self.tab = Tab::Meta;
             }
             Msg::OpenShell { working_dir } => {
@@ -862,6 +850,7 @@ impl Applet for Editor {
                 if let Some(tab) = self.tabs.get_mut(&id) {
                     match (msg, tab) {
                         (TabMsg::ShellInput { stderr: _, content }, TabType::Shell(shell_tab)) => {
+                            // TODO: visual marker of stderr lines? do we care?
                             shell_tab
                                 .shell_output
                                 .buffer
@@ -1054,6 +1043,9 @@ fn main() {
 
         let load_result = widget.load_templates();
         widget.report_error(load_result);
+
+        widget.new_text_tab(None, TextBuffer::from_string(HELP_TEXT));
+
         widget
     });
 
