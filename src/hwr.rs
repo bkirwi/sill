@@ -177,7 +177,7 @@ impl TextStuff {
         self.big_recognizer = CharRecognizer::new(
             self.templates
                 .iter()
-                .filter(|ct| ['X', 'C', 'V', 'S'].contains(&ct.char))
+                .filter(|ct| ['X', 'C', 'V', 'S', '>', '<', 'Q'].contains(&ct.char))
                 .flat_map(|ct| {
                     let c = ct.char;
                     ct.templates

@@ -223,6 +223,28 @@ impl TextWindow {
                             self.replace(Replace::remove(start, end));
                             self.selection = Selection::Normal;
                         }
+                        Some('Q') => {
+                            let line_start = (start.0, 0);
+                            let end = if end == start {
+                                self.buffer.clamp((end.0, usize::MAX))
+                            } else {
+                                end
+                            };
+                            let remaining_width = self.dimensions.1 - start.1;
+                            let prefix = self.buffer.copy(line_start, start).content_string();
+                            let remainder = self.buffer.copy(start, end).content_string();
+                            let remainder = remainder.replace(&format!("\n{}", prefix), " ");
+                            let wrapped = textwrap::fill(
+                                &remainder,
+                                Options::new(remaining_width).subsequent_indent(&prefix),
+                            );
+                            self.replace(Replace {
+                                from: start,
+                                until: end,
+                                content: TextBuffer::from_string(&wrapped),
+                            });
+                            self.selection = Selection::Normal;
+                        }
                         _ => {}
                     }
                 }
