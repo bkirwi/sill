@@ -3,14 +3,17 @@ use armrest::dollar::Points;
 use armrest::ink::Ink;
 use armrest::ui::{View, Widget};
 use std::cmp::Ordering;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::mem;
 use std::rc::Rc;
+use textwrap;
+use textwrap::Options;
 
 const NUM_RECENT_RECOGNITIONS: usize = 16;
 
 pub enum TextMessage {
     Write(Ink),
+    Erase(Ink),
 }
 
 #[derive(Clone)]
@@ -153,6 +156,52 @@ impl TextWindow {
         (self.origin.0 + coord.0, self.origin.1 + coord.1)
     }
 
+    pub fn erase(&mut self, ink: Ink) {
+        let width = self.grid_metrics.width as f32;
+        let height = self.grid_metrics.height as f32;
+        let ink = ink.resample(width / 2.0);
+
+        let mut to_erase = BTreeSet::new();
+        for stroke in ink.strokes() {
+            for point in stroke {
+                let row = (point.y / height).max(0.0);
+                let col = (point.x / width).max(0.0);
+                to_erase.insert(self.relative((row as usize, col as usize)));
+            }
+        }
+
+        let mut iter = to_erase.into_iter();
+        if let Some((row, col)) = iter.next() {
+            let mut start = (row, col);
+            let mut end = (row, col + 1);
+
+            while let Some(coord) = iter.next() {
+                if coord == end {
+                    // we can expand the current run
+                    end = (end.0, end.1 + 1);
+                } else {
+                    // replace and begin anew
+                    start = self.buffer.clamp(start);
+                    end = self.buffer.clamp(end);
+                    self.replace(Replace {
+                        from: start,
+                        until: end,
+                        content: TextBuffer::padding(diff_coord(start, end)),
+                    });
+                    start = coord;
+                    end = (coord.0, coord.1 + 1);
+                }
+            }
+            start = self.buffer.clamp(start);
+            end = self.buffer.clamp(end);
+            self.replace(Replace {
+                from: start,
+                until: end,
+                content: TextBuffer::padding(diff_coord(start, end)),
+            });
+        }
+    }
+
     pub fn ink_row(&mut self, ink_type: InkType, text_stuff: &mut TextStuff) {
         match ink_type {
             InkType::Scratch { at } => {
@@ -278,6 +327,7 @@ impl Widget for TextWindow {
             self.dimensions,
             |view| {
                 view.handlers().pad(8).on_ink(TextMessage::Write);
+                view.handlers().on_erase(TextMessage::Erase);
             },
             |row_offset, col_offset, mut view| {
                 let row = row_origin + row_offset;

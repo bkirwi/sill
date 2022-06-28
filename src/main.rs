@@ -425,6 +425,7 @@ impl Widget for Editor {
                     .borrow()
                     .map(|message| match message {
                         TextMessage::Write(ink) => Msg::Write { ink },
+                        TextMessage::Erase(ink) => Msg::Erase { ink },
                     })
                     .render_split(&mut view, Side::Top, 0.0);
 
@@ -565,6 +566,7 @@ impl Widget for Editor {
                             .borrow()
                             .map(|message| match message {
                                 TextMessage::Write(ink) => Msg::Write { ink },
+                                TextMessage::Erase(ink) => Msg::Erase { ink },
                             })
                             .render_split(&mut view, Side::Top, 0.0);
 
@@ -585,6 +587,7 @@ impl Widget for Editor {
                             .borrow()
                             .map(|message| match message {
                                 TextMessage::Write(ink) => Msg::Write { ink },
+                                TextMessage::Erase(ink) => Msg::Erase { ink },
                             })
                             .render_split(&mut view, Side::Top, 0.0);
                     }
@@ -773,6 +776,23 @@ impl Applet for Editor {
                     }
                 }
             }
+            Msg::Erase { ink } => match self.tab {
+                Tab::Meta => {
+                    self.meta.path_window.erase(ink);
+                }
+                Tab::Template => {
+                    // TODO: something about this?
+                }
+                Tab::Edit(id) => match self.tabs.get_mut(&id) {
+                    Some(TabType::Text(tab)) => {
+                        tab.text.erase(ink);
+                    }
+                    Some(TabType::Shell(tab)) => {
+                        tab.shell_output.erase(ink);
+                    }
+                    _ => {}
+                },
+            },
             Msg::SwitchTab { tab } => {
                 if matches!(self.tab, Tab::Template) {
                     self.report_error(self.save_templates());
@@ -780,7 +800,6 @@ impl Applet for Editor {
                 }
                 self.tab = tab;
             }
-            Msg::Erase { .. } => {}
             Msg::Swipe { towards } => match self.tab {
                 // TODO: abstract over the pattern here.
                 Tab::Edit(id) => {
