@@ -98,7 +98,7 @@ impl InkType {
             };
             index_to_ink.entry(index).or_default().append(
                 stroke.translate(-Vector2::new(index as f32 * metrics.width as f32, 0.0)),
-                f32::MAX,
+                0.1,
             );
         }
 

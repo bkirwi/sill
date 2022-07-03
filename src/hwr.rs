@@ -36,12 +36,20 @@ pub fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
 #[derive(Serialize, Deserialize)]
 pub struct TemplateFile<'a> {
     templates: BTreeMap<char, Vec<Cow<'a, str>>>,
+    #[serde(default)]
+    candidate_templates: Vec<TemplateFileEntry<'a>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TemplateFileEntry<'a> {
+    char: char,
+    ink: Cow<'a, str>,
 }
 
 impl<'a> TemplateFile<'a> {
-    pub fn new(templates: &'a [CharTemplates]) -> TemplateFile<'a> {
+    pub fn new(stuff: &'a TextStuff) -> TemplateFile<'a> {
         let mut entries = BTreeMap::new();
-        for ts in templates {
+        for ts in &stuff.templates {
             let strings: Vec<Cow<str>> = ts
                 .templates
                 .iter()
@@ -53,32 +61,20 @@ impl<'a> TemplateFile<'a> {
                 entries.insert(ts.char, strings);
             }
         }
-        TemplateFile { templates: entries }
-    }
 
-    pub fn to_templates(mut self, _size: i32) -> Vec<CharTemplates> {
-        let char_data = |ch: char, strings: Vec<Cow<str>>| CharTemplates {
-            char: ch,
-            templates: strings
-                .into_iter()
-                .map(|s| Template::from_string(s.into_owned()))
-                .collect(),
-        };
+        let candidate_templates: Vec<TemplateFileEntry<'a>> = stuff
+            .candidate_templates
+            .iter()
+            .map(|(t, _, c)| TemplateFileEntry {
+                char: *c,
+                ink: Cow::Borrowed(&t.serialized),
+            })
+            .collect();
 
-        let mut result = vec![];
-
-        for ch in PRINTABLE_ASCII.chars() {
-            result.push(char_data(
-                ch,
-                self.templates.remove(&ch).unwrap_or_default(),
-            ))
+        TemplateFile {
+            templates: entries,
+            candidate_templates,
         }
-
-        for (ch, strings) in self.templates {
-            result.push(char_data(ch, strings));
-        }
-
-        result
     }
 }
 
@@ -159,7 +155,7 @@ pub struct TextStuff {
     pub char_recognizer: CharRecognizer,
     pub big_recognizer: CharRecognizer,
     pub clipboard: Option<TextBuffer>,
-    pub candidate_templates: VecDeque<(Ink, Points, char)>,
+    pub candidate_templates: VecDeque<(Template, Points, char)>,
 }
 
 impl TextStuff {
@@ -171,6 +167,43 @@ impl TextStuff {
             clipboard: None,
             candidate_templates: VecDeque::new(),
         }
+    }
+
+    pub fn load_from_file(&mut self, template_file: TemplateFile, metrics: &Metrics) {
+        let TemplateFile {
+            mut templates,
+            candidate_templates,
+        } = template_file;
+        let char_data = |ch: char, strings: Vec<Cow<str>>| CharTemplates {
+            char: ch,
+            templates: strings
+                .into_iter()
+                .map(|s| Template::from_string(s.into_owned()))
+                .collect(),
+        };
+
+        let mut new_templates = vec![];
+
+        for ch in PRINTABLE_ASCII.chars() {
+            new_templates.push(char_data(ch, templates.remove(&ch).unwrap_or_default()))
+        }
+
+        for (ch, strings) in templates {
+            new_templates.push(char_data(ch, strings));
+        }
+
+        self.templates = new_templates;
+
+        self.candidate_templates = candidate_templates
+            .into_iter()
+            .map(|ct| {
+                let template = Template::from_string(ct.ink.into_owned());
+                let points = ink_to_points(&template.ink, metrics);
+                (template, points, ct.char)
+            })
+            .collect();
+
+        self.init_recognizer(metrics);
     }
 
     pub fn on_overwrite(&mut self, ink: Ink, points: Points, best: char) {
@@ -198,7 +231,7 @@ impl TextStuff {
             });
 
         if let Some((index, score)) = better_match {
-            let (ink, _, candidate_char) = self
+            let (template, _, candidate_char) = self
                 .candidate_templates
                 .remove(index)
                 .expect("Removing just-found index.");
@@ -206,7 +239,7 @@ impl TextStuff {
                 // Positive reinforcement! Promote to a template.
                 dbg!("promote", best, old_score, score);
                 if let Some(ct) = self.templates.iter_mut().find(|ct| ct.char == best) {
-                    ct.templates.push(Template::from_ink(ink));
+                    ct.templates.push(template);
                     // TODO: automatically reinit the recognizers?
                 }
             } else {
@@ -218,7 +251,7 @@ impl TextStuff {
             dbg!("consider", best, old_score);
             if let Some((_, _, rotated_out)) = rotate_queue(
                 &mut self.candidate_templates,
-                (ink, points, best),
+                (Template::from_ink(ink), points, best),
                 NUM_CANDIDATES,
             ) {
                 eprintln!("Rotated out template for char `{rotated_out}`; never used.");

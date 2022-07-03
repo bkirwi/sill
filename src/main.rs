@@ -277,21 +277,25 @@ struct Editor {
 
 impl Editor {
     fn load_templates(&mut self) -> io::Result<()> {
-        let data = match File::open(&self.template_path) {
+        let data: TemplateFile = match File::open(&self.template_path) {
             Ok(file) => serde_json::from_reader(file)?,
-            Err(e) if e.kind() == ErrorKind::NotFound => TemplateFile::new(&[]),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                // File does not exist, which is expected on first boot.
+                return Ok(());
+            }
             Err(e) => return Err(e),
         };
 
-        self.text_stuff.templates = data.to_templates(self.metrics.height);
-        self.text_stuff.init_recognizer(&self.metrics);
+        self.text_stuff.load_from_file(data, &self.metrics);
 
         Ok(())
     }
 
     fn save_templates(&self) -> io::Result<()> {
-        let file_contents = TemplateFile::new(&self.text_stuff.templates);
-        serde_json::to_writer(File::create(&self.template_path)?, &file_contents)?;
+        let file_contents = TemplateFile::new(&self.text_stuff);
+        // NB: because the bulk of the data is long string content,
+        // we don't pay much extra to prettify this!
+        serde_json::to_writer_pretty(File::create(&self.template_path)?, &file_contents)?;
         Ok(())
     }
 
@@ -835,7 +839,9 @@ impl Applet for Editor {
                     let (rows, _) = self.max_dimensions();
                     match towards {
                         Side::Top => {
-                            self.template_offset += rows - 1;
+                            if self.template_offset + rows < self.text_stuff.templates.len() {
+                                self.template_offset += rows - 1;
+                            }
                         }
                         Side::Bottom => {
                             self.template_offset -= (rows - 1).min(self.template_offset);
