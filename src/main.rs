@@ -36,6 +36,7 @@ mod hwr;
 mod ink_type;
 mod text_buffer;
 mod text_window;
+mod util;
 
 static BASE_DIRS: Lazy<BaseDirectories> =
     Lazy::new(|| BaseDirectories::with_prefix("armrest-editor").unwrap());

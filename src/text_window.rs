@@ -1,4 +1,5 @@
 use crate::ink_type::InkMode;
+use crate::util::rotate_queue;
 use crate::*;
 use armrest::dollar::Points;
 use armrest::ink::Ink;
@@ -10,7 +11,8 @@ use std::rc::Rc;
 use textwrap;
 use textwrap::Options;
 
-const NUM_RECENT_RECOGNITIONS: usize = 102;
+const NUM_RECENT_RECOGNITIONS: usize = 10;
+const NUM_UNDOS: usize = 64;
 
 pub enum TextMessage {
     Write(Ink),
@@ -101,23 +103,6 @@ impl TextWindow {
         };
     }
 
-    /// Our character recognizer is extremely fallible. To help improve it, we
-    /// track the last few recognitions in a buffer. If we have to overwrite a
-    /// recent recognition within the buffer window, we assume that the old ink
-    /// should actually have been recognized as the new character. This helps
-    /// bootstrap the template database; though it's still necessary to go look
-    /// at the templates every once in a while and prune useless or incorrect
-    /// ones.
-    pub fn record_recognition(&mut self, latest: Recognition) -> Option<Recognition> {
-        let result = if self.tentative_recognitions.len() > NUM_RECENT_RECOGNITIONS {
-            self.tentative_recognitions.pop_front()
-        } else {
-            None
-        };
-        self.tentative_recognitions.push_back(latest);
-        result
-    }
-
     pub fn do_replace(&mut self, mut replace: Replace) -> Replace {
         // Avoid editing the frozen section of the buffer.
         if self.frozen_until > replace.until {
@@ -153,12 +138,12 @@ impl TextWindow {
     pub fn replace(&mut self, replace: Replace) {
         // Avoid editing the frozen section of the buffer.
         let undo = self.do_replace(replace);
-        self.undos.push_front(undo);
+        rotate_queue(&mut self.undos, undo, NUM_UNDOS);
         self.redos.clear(); // No longer valid!
     }
 
     pub fn undo(&mut self) {
-        if let Some(undo) = self.undos.pop_front() {
+        if let Some(undo) = self.undos.pop_back() {
             self.scroll_into_view(undo.from);
             let redo = self.do_replace(undo);
             self.redos.push(redo);
@@ -169,7 +154,7 @@ impl TextWindow {
         if let Some(redo) = self.redos.pop() {
             self.scroll_into_view(redo.from);
             let undo = self.do_replace(redo);
-            self.undos.push_front(undo);
+            rotate_queue(&mut self.undos, undo, NUM_UNDOS);
         }
     }
 
@@ -329,7 +314,11 @@ impl TextWindow {
 
                         self.replace(Replace::write(coord, c));
 
-                        if let Some(r) = self.record_recognition(recon) {
+                        if let Some(r) = rotate_queue(
+                            &mut self.tentative_recognitions,
+                            recon,
+                            NUM_RECENT_RECOGNITIONS,
+                        ) {
                             dbg!(r.recognized_as, r.overwrites.len());
                             for ink in r.overwrites {
                                 let points = ink_to_points(&ink, &self.grid_metrics);

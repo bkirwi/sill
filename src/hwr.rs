@@ -2,11 +2,12 @@ use crate::{Metrics, TextBuffer};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 
+use crate::util::rotate_queue;
 use serde::Deserialize;
 use serde::Serialize;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// A set of characters that we always include in the template, even when not explicitly configured.
 /// Aside from being very common, this lets us use these characters in other places; eg. allowing
@@ -151,12 +152,14 @@ impl CharRecognizer {
     }
 }
 
+const NUM_CANDIDATES: usize = 64;
+
 pub struct TextStuff {
     pub templates: Vec<CharTemplates>,
     pub char_recognizer: CharRecognizer,
     pub big_recognizer: CharRecognizer,
     pub clipboard: Option<TextBuffer>,
-    pub candidate_templates: Vec<(Ink, Points, char)>,
+    pub candidate_templates: VecDeque<(Ink, Points, char)>,
 }
 
 impl TextStuff {
@@ -166,7 +169,7 @@ impl TextStuff {
             char_recognizer: CharRecognizer::new([]),
             big_recognizer: CharRecognizer::new([]),
             clipboard: None,
-            candidate_templates: vec![],
+            candidate_templates: VecDeque::new(),
         }
     }
 
@@ -195,7 +198,10 @@ impl TextStuff {
             });
 
         if let Some((index, score)) = better_match {
-            let (ink, _, candidate_char) = self.candidate_templates.swap_remove(index);
+            let (ink, _, candidate_char) = self
+                .candidate_templates
+                .remove(index)
+                .expect("Removing just-found index.");
             if candidate_char == best {
                 // Positive reinforcement! Promote to a template.
                 dbg!("promote", best, old_score, score);
@@ -210,7 +216,13 @@ impl TextStuff {
         } else {
             // This might be a good candidate for a template; track it.
             dbg!("consider", best, old_score);
-            self.candidate_templates.push((ink, points, best));
+            if let Some((_, _, rotated_out)) = rotate_queue(
+                &mut self.candidate_templates,
+                (ink, points, best),
+                NUM_CANDIDATES,
+            ) {
+                eprintln!("Rotated out template for char `{rotated_out}`; never used.");
+            }
         }
     }
 
