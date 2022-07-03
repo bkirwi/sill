@@ -1,3 +1,4 @@
+use crate::ink_type::InkMode;
 use crate::*;
 use armrest::dollar::Points;
 use armrest::ink::Ink;
@@ -9,11 +10,19 @@ use std::rc::Rc;
 use textwrap;
 use textwrap::Options;
 
-const NUM_RECENT_RECOGNITIONS: usize = 16;
+const NUM_RECENT_RECOGNITIONS: usize = 102;
 
 pub enum TextMessage {
     Write(Ink),
     Erase(Ink),
+}
+
+#[derive(Clone, Debug)]
+pub struct Recognition {
+    coord: Coord,
+    ink: Ink,
+    recognized_as: char,
+    overwrites: Vec<Ink>,
 }
 
 #[derive(Clone)]
@@ -26,6 +35,7 @@ pub struct TextWindow {
     pub origin: Coord,
     pub frozen_until: Coord,
     pub undos: VecDeque<Replace>,
+    pub redos: Vec<Replace>,
     tentative_recognitions: VecDeque<Recognition>,
 }
 
@@ -45,6 +55,7 @@ impl TextWindow {
             origin: (0, 0),
             frozen_until: (0, 0),
             undos: VecDeque::new(),
+            redos: vec![],
             tentative_recognitions: VecDeque::new(),
         }
     }
@@ -59,6 +70,16 @@ impl TextWindow {
         }
         *row = page_round(*row, row_d, self.dimensions.0);
         *col = page_round(*col, col_d, self.dimensions.1);
+    }
+
+    pub fn scroll_into_view(&mut self, coord: Coord) {
+        fn clamp_relative(value: usize, reference: usize, dimension: usize) -> usize {
+            value.clamp(reference.saturating_sub(dimension - 1), reference)
+        }
+        let row = clamp_relative(self.origin.0, coord.0, self.dimensions.0);
+        let col = clamp_relative(self.origin.1, coord.1, self.dimensions.1);
+        dbg!(self.origin, self.dimensions, row, col, coord);
+        self.origin = (row, col);
     }
 
     pub fn carat(&mut self, carat: Carat) {
@@ -87,38 +108,22 @@ impl TextWindow {
     /// bootstrap the template database; though it's still necessary to go look
     /// at the templates every once in a while and prune useless or incorrect
     /// ones.
-    pub fn record_recognition(
-        &mut self,
-        coord: Coord,
-        ink: Ink,
-        best_char: char,
-    ) -> Option<Recognition> {
-        for r in &mut self.tentative_recognitions {
-            // Assume we got it wrong the first time!
-            if r.coord == coord {
-                r.best_char = best_char;
-                r.overwrites += 1;
-            }
-        }
-
-        self.tentative_recognitions.push_back(Recognition {
-            coord,
-            ink,
-            best_char,
-            overwrites: 0,
-        });
-
-        if self.tentative_recognitions.len() > NUM_RECENT_RECOGNITIONS {
+    pub fn record_recognition(&mut self, latest: Recognition) -> Option<Recognition> {
+        let result = if self.tentative_recognitions.len() > NUM_RECENT_RECOGNITIONS {
             self.tentative_recognitions.pop_front()
         } else {
             None
-        }
+        };
+        self.tentative_recognitions.push_back(latest);
+        result
     }
 
-    pub fn replace(&mut self, mut replace: Replace) {
+    pub fn do_replace(&mut self, mut replace: Replace) -> Replace {
         // Avoid editing the frozen section of the buffer.
         if self.frozen_until > replace.until {
-            return;
+            replace.from = self.frozen_until;
+            replace.until = self.frozen_until;
+            replace.content = TextBuffer::empty();
         } else if self.frozen_until >= replace.from {
             let after = replace
                 .content
@@ -131,7 +136,6 @@ impl TextWindow {
         let old_until = replace.until;
         let undo = self.buffer.replace(replace);
         let new_until = undo.until;
-        self.undos.push_front(undo);
         self.tentative_recognitions.retain_mut(|r| {
             if r.coord < from {
                 true
@@ -143,12 +147,29 @@ impl TextWindow {
                 true
             }
         });
+        undo
+    }
+
+    pub fn replace(&mut self, replace: Replace) {
+        // Avoid editing the frozen section of the buffer.
+        let undo = self.do_replace(replace);
+        self.undos.push_front(undo);
+        self.redos.clear(); // No longer valid!
     }
 
     pub fn undo(&mut self) {
         if let Some(undo) = self.undos.pop_front() {
-            self.replace(undo);
-            self.undos.pop_front(); // TODO: shift to a redo stack.
+            self.scroll_into_view(undo.from);
+            let redo = self.do_replace(undo);
+            self.redos.push(redo);
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(redo) = self.redos.pop() {
+            self.scroll_into_view(redo.from);
+            let undo = self.do_replace(redo);
+            self.undos.push_front(undo);
         }
     }
 
@@ -202,6 +223,55 @@ impl TextWindow {
         }
     }
 
+    fn find_token(&mut self, start: Coord, end: Coord, forward: bool) {
+        let query = self.buffer.copy(start, end);
+        let line: &[char] = &query.contents[0];
+
+        fn find_in(
+            contents: &Vec<Vec<char>>,
+            query: &[char],
+            rows: impl Iterator<Item = usize>,
+        ) -> Option<(usize, usize)> {
+            rows.filter_map(|row| {
+                let row_data = &contents[row];
+                row_data
+                    .windows(query.len())
+                    .enumerate()
+                    .find(|(_, w)| *w == query)
+                    .map(|(col, _)| (row, col))
+            })
+            .next()
+        }
+
+        let result = if forward {
+            find_in(
+                &self.buffer.contents,
+                line,
+                (start.0 + 1)..self.buffer.contents.len(),
+            )
+        } else {
+            find_in(&self.buffer.contents, line, (0..start.0).rev())
+        };
+
+        if let Some(new_start) = result {
+            let new_end = add_coord(new_start, diff_coord(start, end));
+            if let Selection::Range { start, end } = &mut self.selection {
+                start.coord = new_start;
+                end.coord = new_end;
+                // NB: try and get both start/end onscreen where possible.
+                self.scroll_into_view(new_end);
+                self.scroll_into_view(new_start);
+            }
+        }
+    }
+
+    pub fn mode(&self) -> InkMode {
+        match &self.selection {
+            Selection::Normal => InkMode::Normal,
+            _ => InkMode::Special,
+        }
+    }
+
     pub fn ink_row(&mut self, ink_type: InkType, text_stuff: &mut TextStuff) {
         match ink_type {
             InkType::Scratch { at } => {
@@ -209,92 +279,63 @@ impl TextWindow {
                 self.replace(Replace::write(coord, ' '));
             }
             InkType::Glyphs { tokens } => {
-                if matches!(self.selection, Selection::Normal) {
-                    // TODO: a little coalescing perhaps?
-                    for (col, ink) in tokens {
-                        let coord = self.relative(col);
-                        if let Some(c) = text_stuff
-                            .char_recognizer
-                            .best_match(&ink_to_points(&ink, &self.grid_metrics), f32::MAX)
+                // TODO: a little coalescing perhaps?
+                for (col, ink) in tokens {
+                    // So, this is a slightly awkward little dance. The key observation is that
+                    // if the system mispredicts a character, the user will almost always try
+                    // and overwrite the bad guess again to "fix up" the text; and when that
+                    // happens, the original ink is a likely candidate for a new template.
+                    // If we can automatically add that template to the list, the burden of
+                    // gardening templates is significantly reduced.
+
+                    // However, a user might overwrite a character for other reasons; changing
+                    // their mind about what they want to say, for example, so we need some way
+                    // to validate our guess.
+
+                    // Every window keeps a little state tracking recent recognitions. We track
+                    // overwrites; if an overwrite is not itself overwritten, we add it to our
+                    // shared list of candidates.
+
+                    // When we score new characters, we also score them against our candidates,
+                    // and track how well the candidates do. Candidates that are reliable get
+                    // promoted to the main template list. We presumably will still get this
+                    // wrong, but at least users can prune bad ones from there if needed.
+                    let coord = self.relative(col);
+                    if let Some(c) = text_stuff
+                        .char_recognizer
+                        .best_match(&ink_to_points(&ink, &self.grid_metrics), f32::MAX)
+                    {
+                        let overwrites = if let Some(index) = self
+                            .tentative_recognitions
+                            .iter()
+                            .position(|r| r.coord == coord)
                         {
-                            self.replace(Replace::write(coord, c));
-                            if let Some(r) = self.record_recognition(coord, ink, c) {
-                                if r.overwrites > 0 {
-                                    if let Some(t) = text_stuff
-                                        .templates
-                                        .iter_mut()
-                                        .find(|c| c.char == r.best_char)
-                                    {
-                                        t.templates.push(Template::from_ink(r.ink));
-                                    }
-                                }
+                            let mut prev = self
+                                .tentative_recognitions
+                                .remove(index)
+                                .expect("removing just-discovered match");
+                            prev.overwrites.push(prev.ink);
+                            prev.overwrites
+                        } else {
+                            vec![]
+                        };
+
+                        let recon = Recognition {
+                            coord,
+                            ink,
+                            recognized_as: c,
+                            overwrites,
+                        };
+
+                        self.replace(Replace::write(coord, c));
+
+                        if let Some(r) = self.record_recognition(recon) {
+                            dbg!(r.recognized_as, r.overwrites.len());
+                            for ink in r.overwrites {
+                                let points = ink_to_points(&ink, &self.grid_metrics);
+                                text_stuff.on_overwrite(ink, points, r.recognized_as);
                             }
                         }
-                    }
-                } else {
-                    let ink = tokens.into_iter().next().unwrap().1;
-                    let best_match = text_stuff
-                        .big_recognizer
-                        .best_match(&Points::normalize(&ink), f32::MAX);
-                    let (start, end) = match &self.selection {
-                        Selection::Normal => unreachable!("checked in matches! above."),
-                        Selection::Single { carat } => (carat.coord, carat.coord),
-                        Selection::Range { start, end } => (start.coord, end.coord),
-                    };
-                    match best_match {
-                        Some('X') if start != end => {
-                            text_stuff.clipboard = Some(self.buffer.copy(start, end));
-                            self.replace(Replace::remove(start, end));
-                            self.selection = Selection::Normal;
-                        }
-                        Some('C') if start != end => {
-                            text_stuff.clipboard = Some(self.buffer.copy(start, end));
-                            self.selection = Selection::Normal;
-                        }
-                        Some('V') => {
-                            if let Some(buffer) = &text_stuff.clipboard {
-                                self.replace(Replace {
-                                    from: start,
-                                    until: end,
-                                    content: buffer.clone(),
-                                });
-                            }
-                            self.selection = Selection::Normal;
-                        }
-                        Some('S') | Some('>') => {
-                            self.replace(Replace::splice(
-                                start,
-                                TextBuffer::padding(diff_coord(start, end)),
-                            ));
-                            self.selection = Selection::Normal;
-                        }
-                        Some('<') => {
-                            self.replace(Replace::remove(start, end));
-                            self.selection = Selection::Normal;
-                        }
-                        Some('Q') => {
-                            let line_start = (start.0, 0);
-                            let end = if end == start {
-                                self.buffer.clamp((end.0, usize::MAX))
-                            } else {
-                                end
-                            };
-                            let remaining_width = self.dimensions.1 - start.1;
-                            let prefix = self.buffer.copy(line_start, start).content_string();
-                            let remainder = self.buffer.copy(start, end).content_string();
-                            let remainder = remainder.replace(&format!("\n{}", prefix), " ");
-                            let wrapped = textwrap::fill(
-                                &remainder,
-                                Options::new(remaining_width).subsequent_indent(&prefix),
-                            );
-                            self.replace(Replace {
-                                from: start,
-                                until: end,
-                                content: TextBuffer::from_string(&wrapped),
-                            });
-                            self.selection = Selection::Normal;
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -304,6 +345,78 @@ impl TextWindow {
             InkType::Carat { at, ink } => {
                 let coord = self.relative(at);
                 self.carat(Carat { coord, ink });
+            }
+            InkType::BigGlyph { token } => {
+                let ink = token;
+                let best_match = text_stuff
+                    .big_recognizer
+                    .best_match(&Points::normalize(&ink), f32::MAX);
+                let (start, end) = match &self.selection {
+                    Selection::Normal => unreachable!("checked in matches! above."),
+                    Selection::Single { carat } => (carat.coord, carat.coord),
+                    Selection::Range { start, end } => (start.coord, end.coord),
+                };
+                match best_match {
+                    Some('X') if start != end => {
+                        text_stuff.clipboard = Some(self.buffer.copy(start, end));
+                        self.replace(Replace::remove(start, end));
+                        self.selection = Selection::Normal;
+                    }
+                    Some('C') if start != end => {
+                        text_stuff.clipboard = Some(self.buffer.copy(start, end));
+                        self.selection = Selection::Normal;
+                    }
+                    Some('V') => {
+                        if let Some(buffer) = &text_stuff.clipboard {
+                            self.replace(Replace {
+                                from: start,
+                                until: end,
+                                content: buffer.clone(),
+                            });
+                        }
+                        self.selection = Selection::Normal;
+                    }
+                    Some('S') | Some('>') => {
+                        self.replace(Replace::splice(
+                            start,
+                            TextBuffer::padding(diff_coord(start, end)),
+                        ));
+                        self.selection = Selection::Normal;
+                    }
+                    Some('<') => {
+                        self.replace(Replace::remove(start, end));
+                        self.selection = Selection::Normal;
+                    }
+                    Some('Q') => {
+                        let line_start = (start.0, 0);
+                        let end = if end == start {
+                            self.buffer.clamp((end.0, usize::MAX))
+                        } else {
+                            end
+                        };
+                        let remaining_width = self.dimensions.1 - start.1;
+                        let prefix = self.buffer.copy(line_start, start).content_string();
+                        let remainder = self.buffer.copy(start, end).content_string();
+                        let remainder = remainder.replace(&format!("\n{}", prefix), " ");
+                        let wrapped = textwrap::fill(
+                            &remainder,
+                            Options::new(remaining_width).subsequent_indent(&prefix),
+                        );
+                        self.replace(Replace {
+                            from: start,
+                            until: end,
+                            content: TextBuffer::from_string(&wrapped),
+                        });
+                        self.selection = Selection::Normal;
+                    }
+                    Some('N') if start != end && start.0 == end.0 => {
+                        self.find_token(start, end, true);
+                    }
+                    Some('P') if start != end && start.0 == end.0 => {
+                        self.find_token(start, end, false);
+                    }
+                    _ => {}
+                }
             }
         };
     }

@@ -21,6 +21,7 @@ use armrest::ui::{Canvas, Fragment, Side, Text, View, Widget};
 use once_cell::sync::Lazy;
 use xdg::BaseDirectories;
 
+use crate::ink_type::InkMode;
 use crate::text_window::TextMessage;
 use font::*;
 use grid_ui::*;
@@ -72,6 +73,7 @@ pub enum TabMsg {
     SubmitShell,
     SaveAs { path: PathBuf },
     Undo,
+    Redo,
     Save,
 }
 
@@ -124,17 +126,6 @@ impl Default for Selection {
     fn default() -> Self {
         Selection::Normal
     }
-}
-
-/// This stores data from a recent recognition attempt, and the number of times it was overwritten
-/// within the window we maintain. Idea being, if we have to go back and rewrite a char just after
-/// we wrote it, we probably guessed wrong and should use it as a template.
-#[derive(Clone)]
-pub struct Recognition {
-    coord: Coord,
-    ink: Ink,
-    best_char: char,
-    overwrites: usize,
 }
 
 enum TabType {
@@ -364,6 +355,14 @@ impl Widget for Editor {
                                         msg: TabMsg::Undo,
                                     },
                                     !text_tab.text.undos.is_empty(),
+                                ),
+                                button(
+                                    "redo",
+                                    Msg::Tab {
+                                        id,
+                                        msg: TabMsg::Redo,
+                                    },
+                                    !text_tab.text.redos.is_empty(),
                                 ),
                                 button(
                                     "save",
@@ -731,29 +730,42 @@ impl Applet for Editor {
 
     fn update(&mut self, message: Self::Message) -> Option<Self::Upstream> {
         match message {
-            Msg::Write { ink, .. } => {
-                if let Some(ink_type) = InkType::classify(&self.metrics, ink) {
-                    match &mut self.tab {
-                        Tab::Meta => {
-                            self.meta
-                                .path_window
-                                .ink_row(ink_type, &mut self.text_stuff);
-                            self.meta.suggested =
-                                suggestions(&self.meta.path_window.buffer.content_string())
-                                    .unwrap_or_default();
+            Msg::Write { ink, .. } => match &mut self.tab {
+                Tab::Meta => {
+                    if let Some(ink_type) =
+                        InkType::classify(&self.metrics, ink, self.meta.path_window.mode())
+                    {
+                        self.meta
+                            .path_window
+                            .ink_row(ink_type, &mut self.text_stuff);
+                        self.meta.suggested =
+                            suggestions(&self.meta.path_window.buffer.content_string())
+                                .unwrap_or_default();
+                    }
+                }
+                Tab::Edit(id) => match self.tabs.get_mut(id).unwrap() {
+                    TabType::Text(text_tab) => {
+                        if let Some(ink_type) =
+                            InkType::classify(&self.metrics, ink, text_tab.text.mode())
+                        {
+                            text_tab.dirty = true;
+                            text_tab.text.ink_row(ink_type, &mut self.text_stuff);
                         }
-                        Tab::Edit(id) => match self.tabs.get_mut(id).unwrap() {
-                            TabType::Text(text_tab) => {
-                                text_tab.dirty = true;
-                                text_tab.text.ink_row(ink_type, &mut self.text_stuff);
-                            }
-                            TabType::Shell(shell_tab) => {
-                                shell_tab
-                                    .shell_output
-                                    .ink_row(ink_type, &mut self.text_stuff);
-                            }
-                        },
-                        Tab::Template => match ink_type {
+                    }
+
+                    TabType::Shell(shell_tab) => {
+                        if let Some(ink_type) =
+                            InkType::classify(&self.metrics, ink, shell_tab.shell_output.mode())
+                        {
+                            shell_tab
+                                .shell_output
+                                .ink_row(ink_type, &mut self.text_stuff);
+                        }
+                    }
+                },
+                Tab::Template => {
+                    if let Some(ink_type) = InkType::classify(&self.metrics, ink, InkMode::Normal) {
+                        match ink_type {
                             InkType::Strikethrough { start, end } => {
                                 if start.0 == end.0 {
                                     for col in start.1..end.1 {
@@ -772,10 +784,10 @@ impl Applet for Editor {
                                 }
                             }
                             _ => {}
-                        },
+                        }
                     }
                 }
-            }
+            },
             Msg::Erase { ink } => match self.tab {
                 Tab::Meta => {
                     self.meta.path_window.erase(ink);
@@ -907,6 +919,11 @@ impl Applet for Editor {
                         }
                         (TabMsg::Undo, TabType::Text(text_tab)) => {
                             text_tab.text.undo();
+                            text_tab.dirty = true;
+                        }
+                        (TabMsg::Redo, TabType::Text(text_tab)) => {
+                            text_tab.text.redo();
+                            text_tab.dirty = true;
                         }
                         (TabMsg::Save, TabType::Text(text_tab)) => {
                             let result = text_tab.save();

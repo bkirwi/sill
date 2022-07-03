@@ -1,6 +1,7 @@
 use crate::grid_ui::Coord;
 use crate::{Metrics, Vector2};
 use armrest::ink::Ink;
+use armrest::libremarkable::cgmath::EuclideanSpace;
 use std::collections::HashMap;
 
 /// Naively, a mark is a "scratch out" if it has a lot of ink per unit area,
@@ -24,6 +25,13 @@ pub enum InkType {
     Glyphs { tokens: Vec<(Coord, Ink)> },
     // A line between characters; typically represents an insertion point.
     Carat { at: Coord, ink: Ink },
+    BigGlyph { token: Ink },
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub enum InkMode {
+    Normal,
+    Special,
 }
 
 impl InkType {
@@ -97,7 +105,7 @@ impl InkType {
         index_to_ink
     }
 
-    pub fn classify(metrics: &Metrics, ink: Ink) -> Option<InkType> {
+    pub fn classify(metrics: &Metrics, ink: Ink, mode: InkMode) -> Option<InkType> {
         if ink.len() == 0 {
             return None;
         }
@@ -111,7 +119,7 @@ impl InkType {
         let max_y = ink.y_range.max / metrics.height as f32;
 
         // Roughly: a strikethrough should be a single stroke that's mostly horizontal.
-        if (max_x - min_x) > 1.5 && ink.strokes().count() == 1 {
+        if mode == InkMode::Normal && (max_x - min_x) > 1.5 && ink.strokes().count() == 1 {
             if ink.ink_len() / (ink.x_range.max - ink.x_range.min) < 1.2 {
                 let start = min_x.round().max(0.0) as usize;
                 let end = max_x.round().max(0.0) as usize;
@@ -147,16 +155,25 @@ impl InkType {
             return None;
         }
 
-        if is_erase(&ink) {
+        if mode == InkMode::Normal && is_erase(&ink) {
             let col = center as usize;
             return Some(InkType::Scratch { at: (row, col) });
         }
 
-        let mut tokens: Vec<_> = Self::tokenize(metrics, &ink)
-            .into_iter()
-            .map(|(c, v)| ((row, c), v))
-            .collect();
-        tokens.sort_by_key(|(k, _)| *k);
-        Some(InkType::Glyphs { tokens })
+        match mode {
+            InkMode::Normal => {
+                let mut tokens: Vec<_> = Self::tokenize(metrics, &ink)
+                    .into_iter()
+                    .map(|(c, v)| ((row, c), v))
+                    .collect();
+                tokens.sort_by_key(|(k, _)| *k);
+                Some(InkType::Glyphs { tokens })
+            }
+            InkMode::Special => {
+                let centroid = ink.centroid();
+                let ink = ink.translate(-centroid.to_vec());
+                Some(InkType::BigGlyph { token: ink })
+            }
+        }
     }
 }

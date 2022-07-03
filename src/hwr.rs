@@ -5,6 +5,7 @@ use armrest::ink::Ink;
 use serde::Deserialize;
 use serde::Serialize;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// A set of characters that we always include in the template, even when not explicitly configured.
@@ -155,6 +156,7 @@ pub struct TextStuff {
     pub char_recognizer: CharRecognizer,
     pub big_recognizer: CharRecognizer,
     pub clipboard: Option<TextBuffer>,
+    pub candidate_templates: Vec<(Ink, Points, char)>,
 }
 
 impl TextStuff {
@@ -164,6 +166,51 @@ impl TextStuff {
             char_recognizer: CharRecognizer::new([]),
             big_recognizer: CharRecognizer::new([]),
             clipboard: None,
+            candidate_templates: vec![],
+        }
+    }
+
+    pub fn on_overwrite(&mut self, ink: Ink, points: Points, best: char) {
+        if self.char_recognizer.templates.is_empty() {
+            return;
+        }
+
+        let (index, old_score) = points.recognize(&self.char_recognizer.templates);
+        let old_char = self.char_recognizer.chars[index];
+        if old_char == best {
+            // A bit surprising: we seem to predict this correctly now.
+            // Maybe we've already added a better template?
+            return;
+        }
+
+        // The candidate for the same char that most improves on the score, if any.
+        let better_match = self
+            .candidate_templates
+            .iter()
+            .enumerate()
+            .map(|(i, (_, p, _))| (i, points.distance(p, old_score)))
+            .filter(|(_, score)| *score < old_score)
+            .min_by(|(_, l_score), (_, r_score)| {
+                l_score.partial_cmp(r_score).unwrap_or(Ordering::Equal)
+            });
+
+        if let Some((index, score)) = better_match {
+            let (ink, _, candidate_char) = self.candidate_templates.swap_remove(index);
+            if candidate_char == best {
+                // Positive reinforcement! Promote to a template.
+                dbg!("promote", best, old_score, score);
+                if let Some(ct) = self.templates.iter_mut().find(|ct| ct.char == best) {
+                    ct.templates.push(Template::from_ink(ink));
+                    // TODO: automatically reinit the recognizers?
+                }
+            } else {
+                // Negative reinforcement! Get rid of the candidate.
+                dbg!("demote", best, candidate_char, old_score, score);
+            }
+        } else {
+            // This might be a good candidate for a template; track it.
+            dbg!("consider", best, old_score);
+            self.candidate_templates.push((ink, points, best));
         }
     }
 
@@ -177,7 +224,7 @@ impl TextStuff {
         self.big_recognizer = CharRecognizer::new(
             self.templates
                 .iter()
-                .filter(|ct| ['X', 'C', 'V', 'S', '>', '<', 'Q'].contains(&ct.char))
+                .filter(|ct| ['X', 'C', 'V', 'S', '>', '<', 'Q', 'N', 'P'].contains(&ct.char))
                 .flat_map(|ct| {
                     let c = ct.char;
                     ct.templates
