@@ -99,7 +99,7 @@ impl InkType {
         index_to_ink
     }
 
-    pub fn classify(metrics: &Metrics, ink: Ink, selection: &Selection) -> Option<InkType> {
+    pub fn classify(metrics: &Metrics, ink: Ink, selection: &Selection<Coord>) -> Option<InkType> {
         if ink.len() == 0 {
             return None;
         }
@@ -142,7 +142,7 @@ impl InkType {
 
                         let start_coord = point_coord(*stroke.first().unwrap());
                         let end_coord = point_coord(*stroke.last().unwrap());
-                        if start_coord == carat.coord {
+                        if start_coord == *carat {
                             return Some(InkType::LineTo { coord: end_coord });
                         }
                     }

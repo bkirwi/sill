@@ -25,14 +25,14 @@ pub struct Carat {
     pub ink: Ink,
 }
 
-#[derive(Clone)]
-pub enum Selection {
+#[derive(Clone, Copy)]
+pub enum Selection<T = Carat> {
     Normal,
-    Single { carat: Carat },
-    Range { start: Carat, end: Carat },
+    Single { carat: T },
+    Range { start: T, end: T },
 }
 
-impl Default for Selection {
+impl<T> Default for Selection<T> {
     fn default() -> Self {
         Selection::Normal
     }
@@ -78,6 +78,31 @@ impl TextWindow {
             undos: VecDeque::new(),
             redos: vec![],
             tentative_recognitions: VecDeque::new(),
+        }
+    }
+
+    pub fn selection(&self) -> Selection<Coord> {
+        let onscreen = |(row, col): Coord| {
+            let (o_row, o_col) = self.origin;
+            if row >= o_row && col >= o_col {
+                Some((row - o_row, col - o_col))
+            } else {
+                None
+            }
+        };
+
+        match &self.selection {
+            Selection::Normal => Selection::Normal,
+            Selection::Single { carat } => match onscreen(carat.coord) {
+                None => Selection::Normal,
+                Some(carat) => Selection::Single { carat },
+            },
+            Selection::Range { start, end } => match (onscreen(start.coord), onscreen(end.coord)) {
+                (Some(start), Some(end)) => Selection::Range { start, end },
+                (None, Some(carat)) => Selection::Single { carat },
+                (Some(carat), None) => Selection::Single { carat },
+                (None, None) => Selection::Normal,
+            },
         }
     }
 
@@ -420,6 +445,7 @@ impl TextWindow {
             }
             InkType::LineTo { coord } => {
                 if let Selection::Single { carat } = &self.selection {
+                    let coord = self.relative(coord);
                     let selected = carat.coord;
                     if selected > coord {
                         // It's a delete!

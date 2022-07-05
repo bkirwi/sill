@@ -717,7 +717,7 @@ impl Applet for Editor {
             Msg::Write { ink, .. } => match &mut self.tab {
                 Tab::Meta => {
                     if let Some(ink_type) =
-                        InkType::classify(&self.metrics, ink, &self.meta.path_window.selection)
+                        InkType::classify(&self.metrics, ink, &self.meta.path_window.selection())
                     {
                         self.meta
                             .path_window
@@ -730,7 +730,7 @@ impl Applet for Editor {
                 Tab::Edit(id) => match self.tabs.get_mut(id).unwrap() {
                     TabType::Text(text_tab) => {
                         if let Some(ink_type) =
-                            InkType::classify(&self.metrics, ink, &text_tab.text.selection)
+                            InkType::classify(&self.metrics, ink, &text_tab.text.selection())
                         {
                             text_tab.dirty = true;
                             text_tab.text.ink_row(ink_type, &mut self.text_stuff);
@@ -738,9 +738,11 @@ impl Applet for Editor {
                     }
 
                     TabType::Shell(shell_tab) => {
-                        if let Some(ink_type) =
-                            InkType::classify(&self.metrics, ink, &shell_tab.shell_output.selection)
-                        {
+                        if let Some(ink_type) = InkType::classify(
+                            &self.metrics,
+                            ink,
+                            &shell_tab.shell_output.selection(),
+                        ) {
                             shell_tab
                                 .shell_output
                                 .ink_row(ink_type, &mut self.text_stuff);
