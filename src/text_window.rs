@@ -1,4 +1,3 @@
-use crate::ink_type::InkMode;
 use crate::util::rotate_queue;
 use crate::*;
 use armrest::dollar::Points;
@@ -32,7 +31,7 @@ pub struct TextWindow {
     pub buffer: TextBuffer,
     atlas: Rc<Atlas>,
     pub grid_metrics: Metrics,
-    selection: Selection,
+    pub(crate) selection: Selection,
     pub dimensions: Coord,
     pub origin: Coord,
     pub frozen_until: Coord,
@@ -247,13 +246,6 @@ impl TextWindow {
                 self.scroll_into_view(new_end);
                 self.scroll_into_view(new_start);
             }
-        }
-    }
-
-    pub fn mode(&self) -> InkMode {
-        match &self.selection {
-            Selection::Normal => InkMode::Normal,
-            _ => InkMode::Special,
         }
     }
 

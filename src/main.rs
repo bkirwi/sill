@@ -1,5 +1,4 @@
 use std::borrow::{Borrow, Cow};
-
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::fs::File;
@@ -11,23 +10,20 @@ use std::{env, fs, io, process, thread};
 
 use armrest::app;
 use armrest::app::{Applet, Component, Sender};
-
 use armrest::ink::Ink;
 use armrest::libremarkable::cgmath::Zero;
 use armrest::libremarkable::framebuffer::cgmath::Vector2;
 use armrest::libremarkable::framebuffer::common::{color, DISPLAYHEIGHT, DISPLAYWIDTH};
 use armrest::ui::{Canvas, Fragment, Side, Text, View, Widget};
-
 use once_cell::sync::Lazy;
 use xdg::BaseDirectories;
 
-use crate::ink_type::InkMode;
-use crate::text_window::TextMessage;
 use font::*;
 use grid_ui::*;
 use hwr::*;
 use ink_type::InkType;
 use text_buffer::*;
+use text_window::TextMessage;
 use text_window::TextWindow;
 
 mod font;
@@ -405,7 +401,9 @@ impl Widget for Editor {
                 };
             }
             Tab::Template => {
-                button("done", Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
+                let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, "templates");
+                head_text.render_split(&mut header, Side::Left, 0.5);
+                button("save and close", Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
                     &mut header,
                     Side::Right,
                     0.5,
@@ -738,7 +736,7 @@ impl Applet for Editor {
             Msg::Write { ink, .. } => match &mut self.tab {
                 Tab::Meta => {
                     if let Some(ink_type) =
-                        InkType::classify(&self.metrics, ink, self.meta.path_window.mode())
+                        InkType::classify(&self.metrics, ink, &self.meta.path_window.selection)
                     {
                         self.meta
                             .path_window
@@ -751,7 +749,7 @@ impl Applet for Editor {
                 Tab::Edit(id) => match self.tabs.get_mut(id).unwrap() {
                     TabType::Text(text_tab) => {
                         if let Some(ink_type) =
-                            InkType::classify(&self.metrics, ink, text_tab.text.mode())
+                            InkType::classify(&self.metrics, ink, &text_tab.text.selection)
                         {
                             text_tab.dirty = true;
                             text_tab.text.ink_row(ink_type, &mut self.text_stuff);
@@ -760,7 +758,7 @@ impl Applet for Editor {
 
                     TabType::Shell(shell_tab) => {
                         if let Some(ink_type) =
-                            InkType::classify(&self.metrics, ink, shell_tab.shell_output.mode())
+                            InkType::classify(&self.metrics, ink, &shell_tab.shell_output.selection)
                         {
                             shell_tab
                                 .shell_output
@@ -769,7 +767,9 @@ impl Applet for Editor {
                     }
                 },
                 Tab::Template => {
-                    if let Some(ink_type) = InkType::classify(&self.metrics, ink, InkMode::Normal) {
+                    if let Some(ink_type) =
+                        InkType::classify(&self.metrics, ink, &Selection::Normal)
+                    {
                         match ink_type {
                             InkType::Strikethrough { start, end } => {
                                 if start.0 == end.0 {
