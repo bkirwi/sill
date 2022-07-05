@@ -18,6 +18,7 @@ use armrest::ui::{Canvas, Fragment, Side, Text, View, Widget};
 use once_cell::sync::Lazy;
 use xdg::BaseDirectories;
 
+use crate::text_window::Selection;
 use font::*;
 use grid_ui::*;
 use hwr::*;
@@ -104,26 +105,6 @@ pub enum Tab {
 }
 
 type Coord = (usize, usize);
-
-#[derive(Clone)]
-
-pub struct Carat {
-    coord: Coord,
-    ink: Ink,
-}
-
-#[derive(Clone)]
-pub enum Selection {
-    Normal,
-    Single { carat: Carat },
-    Range { start: Carat, end: Carat },
-}
-
-impl Default for Selection {
-    fn default() -> Self {
-        Selection::Normal
-    }
-}
 
 enum TabType {
     Text(TextTab),

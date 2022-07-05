@@ -1,7 +1,7 @@
 use crate::grid_ui::Coord;
-use crate::{Metrics, Selection, Vector2};
+use crate::{Metrics, Selection};
 use armrest::ink::Ink;
-use armrest::libremarkable::cgmath::EuclideanSpace;
+use armrest::libremarkable::cgmath::{EuclideanSpace, MetricSpace, Point3, Vector2};
 use std::collections::HashMap;
 
 /// Naively, a mark is a "scratch out" if it has a lot of ink per unit area,
@@ -26,6 +26,7 @@ pub enum InkType {
     // A line between characters; typically represents an insertion point.
     Carat { at: Coord, ink: Ink },
     BigGlyph { token: Ink },
+    LineTo { coord: Coord },
 }
 impl InkType {
     pub fn tokenize(metrics: &Metrics, ink: &Ink) -> HashMap<usize, Ink> {
@@ -104,12 +105,8 @@ impl InkType {
         }
 
         let row = (ink.centroid().y / metrics.height as f32).max(0.0) as usize;
-        let ink = ink.translate(-Vector2::new(0.0, row as f32 * metrics.height as f32));
-
         let min_x = ink.x_range.min / metrics.width as f32;
         let max_x = ink.x_range.max / metrics.width as f32;
-        let min_y = ink.y_range.min / metrics.height as f32;
-        let max_y = ink.y_range.max / metrics.height as f32;
 
         // Roughly: a strikethrough should be a single stroke that's mostly horizontal.
         if matches!(selection, &Selection::Normal)
@@ -129,6 +126,37 @@ impl InkType {
                 return None;
             }
         }
+
+        match selection {
+            Selection::Single { carat } => {
+                let mut strokes = ink.strokes();
+                if let Some(stroke) = strokes.next() {
+                    if strokes.next() == None {
+                        let point_coord = |p: Point3<f32>| {
+                            let x = p.x / metrics.width as f32;
+                            let col = x.round().max(0.0);
+                            let y = p.y / metrics.height as f32;
+                            let row = y.floor().max(0.0);
+                            (row as usize, col as usize)
+                        };
+
+                        let start_coord = point_coord(*stroke.first().unwrap());
+                        let end_coord = point_coord(*stroke.last().unwrap());
+                        if start_coord == carat.coord {
+                            return Some(InkType::LineTo { coord: end_coord });
+                        }
+                    }
+                }
+            }
+            Selection::Range { .. } => {
+                // TODO: move selection elsewhere?
+            }
+            _ => {}
+        }
+
+        let ink = ink.translate(-Vector2::new(0.0, row as f32 * metrics.height as f32));
+        let min_y = ink.y_range.min / metrics.height as f32;
+        let max_y = ink.y_range.max / metrics.height as f32;
 
         let center = (min_x + max_x) / 2.0;
 

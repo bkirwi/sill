@@ -18,6 +18,26 @@ pub enum TextMessage {
     Erase(Ink),
 }
 
+#[derive(Clone)]
+
+pub struct Carat {
+    pub coord: Coord,
+    pub ink: Ink,
+}
+
+#[derive(Clone)]
+pub enum Selection {
+    Normal,
+    Single { carat: Carat },
+    Range { start: Carat, end: Carat },
+}
+
+impl Default for Selection {
+    fn default() -> Self {
+        Selection::Normal
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Recognition {
     coord: Coord,
@@ -79,7 +99,6 @@ impl TextWindow {
         }
         let row = clamp_relative(self.origin.0, coord.0, self.dimensions.0);
         let col = clamp_relative(self.origin.1, coord.1, self.dimensions.1);
-        dbg!(self.origin, self.dimensions, row, col, coord);
         self.origin = (row, col);
     }
 
@@ -397,6 +416,21 @@ impl TextWindow {
                         self.find_token(start, end, false);
                     }
                     _ => {}
+                }
+            }
+            InkType::LineTo { coord } => {
+                if let Selection::Single { carat } = &self.selection {
+                    let selected = carat.coord;
+                    if selected > coord {
+                        // It's a delete!
+                        self.replace(Replace::remove(coord, selected))
+                    } else {
+                        self.replace(Replace::splice(
+                            selected,
+                            TextBuffer::padding(diff_coord(coord, selected)),
+                        ));
+                    }
+                    self.selection = Selection::Normal;
                 }
             }
         };
