@@ -60,22 +60,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "armrest-editor"
-version = "0.1.0"
-dependencies = [
- "armrest",
- "clap",
- "itertools 0.10.3",
- "once_cell",
- "rusttype",
- "serde",
- "serde_json",
- "textwrap 0.15.0",
- "uuid",
- "xdg",
-]
-
-[[package]]
 name = "arrayvec"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -851,6 +835,22 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "sill"
+version = "0.1.0"
+dependencies = [
+ "armrest",
+ "clap",
+ "itertools 0.10.3",
+ "once_cell",
+ "rusttype",
+ "serde",
+ "serde_json",
+ "textwrap 0.15.0",
+ "uuid",
+ "xdg",
 ]
 
 [[package]]
