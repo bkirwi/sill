@@ -6,7 +6,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::rc::Rc;
-use std::{env, fs, io, process, thread};
+use std::{env, fs, io, mem, process, thread};
 
 use armrest::app;
 use armrest::app::{Applet, Component, Sender};
@@ -73,6 +73,7 @@ pub enum TabMsg {
     Undo,
     Redo,
     Save,
+    Quit,
 }
 
 pub struct Meta {
@@ -310,7 +311,16 @@ impl Widget for Editor {
         match self.tab {
             Tab::Meta { .. } => {
                 let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, &*APP_NAME);
-                head_text.render_placed(header, 0.0, 0.5);
+                head_text.render_split(&mut header, Side::Left, 0.5);
+                Spaced(
+                    40,
+                    &[button(
+                        "templates",
+                        Msg::SwitchTab { tab: Tab::Template },
+                        true,
+                    )],
+                )
+                .render_placed(header, 1.0, 0.5);
             }
             Tab::Edit(id) => {
                 match &self.tabs[&id] {
@@ -382,15 +392,33 @@ impl Widget for Editor {
                 };
             }
             Tab::Template => {
-                let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, "templates");
+                let head_text = button("templates", Msg::SwitchTab { tab: Tab::Meta }, true);
                 head_text.render_split(&mut header, Side::Left, 0.5);
-                button("save and close", Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
-                    &mut header,
-                    Side::Right,
-                    0.5,
-                );
                 header.leave_rest_blank();
             }
+        }
+
+        {
+            let mut footer = view.split_off(Side::Bottom, TOP_MARGIN);
+            footer.split_off(Side::Left, LEFT_MARGIN);
+            footer.split_off(Side::Right, self.right_margin());
+
+            let mut message = match self.tab {
+                Tab::Meta => "".to_string(),
+                Tab::Template => "".to_string(),
+                Tab::Edit(id) => {
+                    let (row, col) = match &self.tabs[&id] {
+                        TabType::Text(text_tab) => text_tab.text.origin,
+                        TabType::Shell(shell_tab) => shell_tab.shell_output.origin,
+                    };
+                    format!("[{row}:{col}] ")
+                }
+            };
+
+            message.push_str(&self.error_string);
+
+            let text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, &message);
+            text.render_placed(footer, 0.0, 0.4);
         }
 
         for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
@@ -430,7 +458,7 @@ impl Widget for Editor {
                 Spaced(
                     40,
                     &[
-                        button("create", Msg::New, true),
+                        button("new file", Msg::New, !written_path.exists()),
                         button(
                             "new shell",
                             Msg::OpenShell {
@@ -438,7 +466,6 @@ impl Widget for Editor {
                             },
                             true,
                         ),
-                        button("templates", Msg::SwitchTab { tab: Tab::Template }, true),
                     ],
                 )
                 .render_split(&mut buttons, Side::Right, 0.5);
@@ -471,15 +498,28 @@ impl Widget for Editor {
                             tab_view.split_off(Side::Left, 20);
                             tab_label.render_split(&mut tab_view, Side::Left, 0.5);
 
-                            button(
-                                "save as",
-                                Msg::Tab {
-                                    id: *tab_id,
-                                    msg: TabMsg::SaveAs {
-                                        path: written_path.clone(),
-                                    },
-                                },
-                                !written_path.exists(),
+                            Spaced(
+                                40,
+                                &[
+                                    button(
+                                        "save as",
+                                        Msg::Tab {
+                                            id: *tab_id,
+                                            msg: TabMsg::SaveAs {
+                                                path: written_path.clone(),
+                                            },
+                                        },
+                                        !written_path.exists(),
+                                    ),
+                                    button(
+                                        "close",
+                                        Msg::Tab {
+                                            id: *tab_id,
+                                            msg: TabMsg::Quit,
+                                        },
+                                        true,
+                                    ),
+                                ],
                             )
                             .render_split(
                                 &mut tab_view,
@@ -499,6 +539,22 @@ impl Widget for Editor {
                             let mut tab_view = view.split_off(Side::Top, entry_height);
                             tab_view.split_off(Side::Left, 20);
                             tab_label.render_split(&mut tab_view, Side::Left, 0.5);
+                            Spaced(
+                                40,
+                                &[button(
+                                    "close",
+                                    Msg::Tab {
+                                        id: *tab_id,
+                                        msg: TabMsg::Quit,
+                                    },
+                                    true,
+                                )],
+                            )
+                            .render_split(
+                                &mut tab_view,
+                                Side::Right,
+                                0.5,
+                            );
                         }
                     }
                 }
@@ -512,7 +568,11 @@ impl Widget for Editor {
                 );
 
                 for s in &self.meta.suggested {
+                    if view.size().y < entry_height {
+                        break;
+                    }
                     let mut suggest_view = view.split_off(Side::Top, entry_height);
+                    suggest_view.split_off(Side::Left, 20);
 
                     let msg = if s.ends_with('/') {
                         Msg::MetaPath {
@@ -552,16 +612,6 @@ impl Widget for Editor {
                                 TextMessage::Erase(ink) => Msg::Erase { ink },
                             })
                             .render_split(&mut view, Side::Top, 0.0);
-
-                        let text = Text::literal(
-                            DEFAULT_CHAR_HEIGHT,
-                            &*FONT,
-                            &format!(
-                                "{}:{} [{}]",
-                                text_tab.text.origin.0, text_tab.text.origin.1, self.error_string
-                            ),
-                        );
-                        text.render_placed(view, 0.0, 0.4);
                     }
                     TabType::Shell(shell_tab) => {
                         view.split_off(Side::Left, self.left_margin());
@@ -624,7 +674,7 @@ impl Widget for Editor {
 
 const TEXT_WEIGHT: f32 = 0.9;
 
-const NUM_SUGGESTIONS: usize = 16;
+const NUM_SUGGESTIONS: usize = 32;
 const MAX_DIR_ENTRIES: usize = 1024;
 
 fn full_path(path: &Path) -> Option<String> {
@@ -798,6 +848,7 @@ impl Applet for Editor {
                     self.report_error(self.save_templates());
                     self.text_stuff.init_recognizer(&self.metrics);
                 }
+                self.error_string.clear();
                 self.tab = tab;
             }
             Msg::Swipe { towards } => match self.tab {
@@ -847,7 +898,10 @@ impl Applet for Editor {
                     self.new_text_tab(Some(path), TextBuffer::from_string(&file_contents));
                 }
             }
-            Msg::New => self.new_text_tab(None, TextBuffer::empty()),
+            Msg::New => {
+                self.new_text_tab(None, TextBuffer::empty());
+                self.error_string.clear();
+            }
             Msg::MetaPath { current_path } => {
                 self.meta.path_window.buffer = TextBuffer::from_string(&current_path);
                 self.meta.reload_suggestions();
@@ -867,19 +921,26 @@ impl Applet for Editor {
                 self.tabs.insert(id, TabType::Shell(shell));
                 self.tab = Tab::Edit(id);
             }
+            Msg::Tab {
+                id,
+                msg: TabMsg::Quit,
+            } => {
+                self.tabs.remove(&id);
+            }
             Msg::Tab { id, msg } => {
                 if let Some(tab) = self.tabs.get_mut(&id) {
                     match (msg, tab) {
                         (TabMsg::ShellInput { stderr: _, content }, TabType::Shell(shell_tab)) => {
                             // TODO: visual marker of stderr lines? do we care?
-                            shell_tab
-                                .shell_output
-                                .buffer
-                                .append(TextBuffer::from_string(&content));
-
+                            let content_buffer = TextBuffer::from_string(&content);
+                            let content_size = content_buffer.end();
+                            shell_tab.shell_output.replace(Replace::splice(
+                                shell_tab.shell_output.frozen_until,
+                                content_buffer,
+                            ));
                             shell_tab.shell_output.undos.clear();
                             shell_tab.shell_output.frozen_until =
-                                shell_tab.shell_output.buffer.end();
+                                add_coord(shell_tab.shell_output.frozen_until, content_size);
                         }
                         (TabMsg::SubmitShell, TabType::Shell(shell_tab)) => {
                             shell_tab.shell_output.replace(Replace::splice(
@@ -897,6 +958,8 @@ impl Applet for Editor {
                                 }
                             }
                             shell_tab.history.push_back(buffer);
+                            shell_tab.shell_output.frozen_until =
+                                shell_tab.shell_output.buffer.end();
                         }
                         (TabMsg::SaveAs { path }, TabType::Text(text_tab)) => {
                             if !path.exists() && path.parent().iter().any(|p| p.is_dir()) {
