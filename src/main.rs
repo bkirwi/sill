@@ -36,7 +36,7 @@ mod text_window;
 mod util;
 
 static BASE_DIRS: Lazy<BaseDirectories> =
-    Lazy::new(|| BaseDirectories::with_prefix("armrest-editor").unwrap());
+    Lazy::new(|| BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).unwrap());
 
 const SCREEN_HEIGHT: i32 = DISPLAYHEIGHT as i32;
 const SCREEN_WIDTH: i32 = DISPLAYWIDTH as i32;
@@ -127,22 +127,35 @@ impl ShellTab {
         sender: Sender<Msg>,
         working_dir: PathBuf,
     ) -> io::Result<ShellTab> {
+        const RCFILE_NAME: &str = "bash.bashrc";
+        let rcfile = match BASE_DIRS.find_config_file(RCFILE_NAME) {
+            Some(found) => found,
+            None => {
+                let path = BASE_DIRS.place_data_file(RCFILE_NAME)?;
+                fs::write(&path, include_str!("default.bashrc"))?;
+                path
+            }
+        };
+
+        let (lines, columns) = dimensions;
+
         // Launch a bash shell, wiring up everything.
         let mut child = process::Command::new("/bin/bash")
             .args([
                 // Disables readline... we're the ones implementing editing!
                 "--noediting",
-                // Disables the standard .bashrc etc. These often include things
-                // that won't work in our captive shell. We may eventually want
-                // to read the standard files and just override some behaviour.
-                "--norc",
+                // Use our custom rcfile, which can do things like
+                "--rcfile",
+            ])
+            .arg(rcfile.into_os_string())
+            .arg(
                 // Run in interactive mode. This does ~many things, like
                 // enabling the prompt, and gets us closer to a normal shell.
                 "-i",
-                // Disables job control, which relies on Real Terminal Features.
-                "+m",
-            ])
+            )
             .current_dir(&working_dir)
+            .env("LINES", lines.to_string())
+            .env("COLUMNS", columns.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -328,7 +341,8 @@ impl Widget for Editor {
                         let path_str = text_tab
                             .path
                             .as_ref()
-                            .map(|p| p.to_string_lossy())
+                            .and_then(|p| p.file_name())
+                            .map(|s| s.to_string_lossy())
                             .unwrap_or(Cow::Borrowed("<unnamed file>"));
 
                         button(&path_str, Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
@@ -485,6 +499,7 @@ impl Widget for Editor {
                             let path_str = tab
                                 .path
                                 .as_ref()
+                                .and_then(|p| p.file_name())
                                 .map(|p| p.to_string_lossy())
                                 .unwrap_or(Cow::Borrowed("<unnamed file>"));
                             let tab_label = button(
