@@ -67,8 +67,6 @@ easier for the software to recognize.
 
 # Using Sill
 
-
-
 ## Editing text
 
 You can:
@@ -102,11 +100,15 @@ it includes:
 
 ## Managing templates
 
-- Add a template by writing it on the grid.
-- Strikethrough or scratch-out to remove a template.
-- Templates are added automatically by "corrections" while
-  editing.
-  - You might need to clean these up!
+To edit the gesture-recognition templates, tap the _templates_
+button at the top left of the main menu.
+- Add a template by writing it in the correct row on the grid.
+- Strikethrough or scratch-out a template to remove it. 
+
+Templates are added automatically by "corrections" you make
+while editing: if you immediately replace a character you just
+wrote, Sill understands that it might have guessed wrong the
+first time.
 
 ### Training the character recognizer
 
@@ -139,16 +141,35 @@ A few general suggestions:
 
 [homoglyphs]: https://en.wikipedia.org/wiki/Homoglyph
 
-## Shell
+## Using the shell
 
-- Immutable prefix: old commands, shell output.
-- Otherwise all the usual editing commands still work.
-- Shell, not a terminal
-  - vim etc. won't work
-  - no formatting
+Sill allows you to open a `bash` shell for interacting with
+your tablet. This is an experimental feature. A few quick
+notes:
 
-## Limitations
+The shell view mixes the text you write with the shell's
+stderr and stdout, similar to how it behaves in a terminal.
+The editable part of the text is at the bottom of the text
+area, with a French grid behind it; the output of the terminal
+and your old commands are at the top, on an ordinary grid,
+and can't be modified. You can still copy and paste from the
+non-editable part, though.
 
+This is a shell, and not a terminal: there's no formatting,
+and terminal-based apps like `vim` or `emacs` won't work.
+Nonetheless, quite a lot of command-line tools work fine
+in this environment.
+
+# Limitations
+
+Sill is not quite a toy, or proof of concept; it's been
+used to edit many real files, including this README.
+Nevertheless, it's still an experimental tool: use at your
+own risk.
+
+In particular, Sill can only properly handle:
 - UTF8 files, paths, and text streams.
 - Small-to-medium files: a few megabytes.
-- No tabs.
+
+These limits are not likely to be lifted entirely, though
+Sill does make some effort to avoid crashing or going wrong.
