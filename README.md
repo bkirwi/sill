@@ -1,9 +1,9 @@
 # Sill
 
-**Sill** is a gesture-based [text editor][text-editor]
+**Sill** is a gesture-based [text editor]
 (and shell) for the reMarkable tablet.
 
-[text editor]: https://en.wikipedia.org/wiki/Text_editor)
+[text editor]: https://en.wikipedia.org/wiki/Text_editor
 
 ## Why a text editor?
 
