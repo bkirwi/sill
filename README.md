@@ -25,8 +25,8 @@ editor is essential:
 ## Why handwriting recognition?
 
 It's already possible to use a normal text editor on
-reMarkable, via a terminal emulator like [Yaft] or
-[FingerTerm]. These apps use a keyboard for
+reMarkable, via a terminal emulator like [yaft] or
+[fingerterm]. These apps use a keyboard for
 input, either via an onscreen keyboard or one you've hooked
 up to the tablet somehow.
 
@@ -46,6 +46,9 @@ However, this all comes at the cost of ambiguity. A
 handwritten character is easier to misinterpret than a
 button on a keyboard, and Sill needs to work a
 bit harder to turn your writing into changes to the text.
+
+[yaft]: https://github.com/timower/rM2-stuff/tree/master/apps/yaft
+[fingerterm]: https://github.com/dixonary/fingerterm-reMarkable
 
 ## How does the handwriting recognition work?
 
