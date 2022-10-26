@@ -201,3 +201,11 @@ used to.
 In particular, Sill can only properly handle:
 - UTF8 files, paths, and text streams.
 - Small-to-medium files: a few megabytes.
+
+# Building
+
+Sill uses [libremarkable] to interact with the tablet;
+see the build instructions in that repo for how to build
+a Rust application for the tablet.
+
+[libremarkable]: https://github.com/canselcik/libremarkable
