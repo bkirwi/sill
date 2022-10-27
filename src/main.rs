@@ -272,7 +272,7 @@ impl Editor {
             Ok(file) => serde_json::from_reader(file)?,
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 // File does not exist, which is expected on first boot.
-                return Ok(());
+                TemplateFile::default()
             }
             Err(e) => return Err(e),
         };

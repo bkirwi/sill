@@ -46,6 +46,15 @@ pub struct TemplateFileEntry<'a> {
     ink: Cow<'a, str>,
 }
 
+impl<'a> Default for TemplateFile<'a> {
+    fn default() -> Self {
+        TemplateFile {
+            templates: Default::default(),
+            candidate_templates: vec![],
+        }
+    }
+}
+
 impl<'a> TemplateFile<'a> {
     pub fn new(stuff: &'a TextStuff) -> TemplateFile<'a> {
         let mut entries = BTreeMap::new();
