@@ -511,7 +511,13 @@ impl Widget for TextWindow {
                 let line = self.buffer.contents.get(row);
                 let char = line
                     .map(|l| match col.cmp(&l.len()) {
-                        Ordering::Less => Some((l[col], 230)),
+                        Ordering::Less => {
+                            let ch = l[col];
+                            match ch {
+                                '\t' => Some(('⇨', 80)),
+                                other => Some((other, 230)),
+                            }
+                        }
                         Ordering::Equal => {
                             let char = if row + 1 == self.buffer.contents.len() {
                                 '⌧'
