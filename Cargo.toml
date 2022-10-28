@@ -6,13 +6,14 @@ edition = "2021"
 [dependencies]
 clap = "3.1.13"
 itertools = "0.10.3"
-rusttype = "0.8.2"
 once_cell = "1.10.0"
-uuid = { version = "0.8.2", features = ["v4"] }
+rusttype = "0.8.2"
 serde = "1.0.136"
 serde_json = "1.0.78"
-xdg = "2.4.1"
 textwrap = "0.15.0"
+toml = "0.5.9"
+uuid = { version = "0.8.2", features = ["v4"] }
+xdg = "2.4.1"
 
 # armrest = { path = "../armrest", default-features = false }
 armrest = { git = "https://github.com/bkirwi/armrest", default-features = false }

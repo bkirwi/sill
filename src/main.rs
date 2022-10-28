@@ -16,6 +16,7 @@ use armrest::libremarkable::framebuffer::cgmath::Vector2;
 use armrest::libremarkable::framebuffer::common::{color, DISPLAYHEIGHT, DISPLAYWIDTH};
 use armrest::ui::{Canvas, Fragment, Side, Text, View, Widget};
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use xdg::BaseDirectories;
 
 use crate::text_window::Selection;
@@ -46,11 +47,25 @@ const LEFT_MARGIN: i32 = 100;
 const DEFAULT_CHAR_HEIGHT: i32 = 40;
 
 const TEMPLATE_FILE: &str = "templates.json";
+const CONFIG_FILE: &str = "sill.toml";
+const BASH_RC_FILE: &str = "sill.bashrc";
 
 const HELP_TEXT: &str = include_str!("../README.md");
 
 static APP_NAME: Lazy<String> =
     Lazy::new(|| format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct Config {
+    cell_height: i32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config { cell_height: 40 }
+    }
+}
 
 #[derive(Clone)]
 pub enum Msg {
@@ -127,11 +142,10 @@ impl ShellTab {
         sender: Sender<Msg>,
         working_dir: PathBuf,
     ) -> io::Result<ShellTab> {
-        const RCFILE_NAME: &str = "bash.bashrc";
-        let rcfile = match BASE_DIRS.find_config_file(RCFILE_NAME) {
+        let rcfile = match BASE_DIRS.find_config_file(BASH_RC_FILE) {
             Some(found) => found,
             None => {
-                let path = BASE_DIRS.place_data_file(RCFILE_NAME)?;
+                let path = BASE_DIRS.place_config_file(BASH_RC_FILE)?;
                 fs::write(&path, include_str!("default.bashrc"))?;
                 path
             }
@@ -1118,9 +1132,15 @@ fn main() {
         .place_data_file(TEMPLATE_FILE)
         .expect("placing the template data file");
 
-    let grid_cell_height = 40;
+    let config = if let Some(config_path) = BASE_DIRS.find_config_file(CONFIG_FILE) {
+        let config_string =
+            fs::read_to_string(config_path).expect("reading the discovered config file");
+        toml::from_str(&config_string).expect("parsing the config file")
+    } else {
+        Config::default()
+    };
 
-    let metrics = Metrics::new(grid_cell_height);
+    let metrics = Metrics::new(config.cell_height.clamp(20, 80));
 
     let atlas = Rc::new(Atlas::new());
 

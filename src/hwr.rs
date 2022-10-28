@@ -31,7 +31,7 @@ pub fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
     points
 }
 
-fn default_char_height() -> i32 {
+pub fn default_char_height() -> i32 {
     40
 }
 
@@ -200,25 +200,24 @@ impl TextStuff {
             Some(metrics.height as f32 / template_height as f32)
         };
 
+        let parse_template = |string: Cow<'_, str>| match scale {
+            None => Template::from_string(string.into_owned()),
+            Some(scale) => {
+                let original = Ink::from_string(&string);
+                let mut ink = Ink::new();
+                for stroke in original.strokes() {
+                    for p in stroke {
+                        ink.push(p.x * scale, p.y * scale, p.z);
+                    }
+                    ink.pen_up();
+                }
+                Template::from_ink(ink)
+            }
+        };
+
         let char_data = |ch: char, strings: Vec<Cow<str>>| CharTemplates {
             char: ch,
-            templates: strings
-                .into_iter()
-                .map(|s| Template::from_string(s.into_owned()))
-                .map(|t| match scale {
-                    None => t,
-                    Some(scale) => {
-                        let mut ink = Ink::new();
-                        for stroke in t.ink.strokes() {
-                            for p in stroke {
-                                ink.push(p.x * scale, p.y * scale, p.z);
-                            }
-                            ink.pen_up();
-                        }
-                        Template::from_ink(ink)
-                    }
-                })
-                .collect(),
+            templates: strings.into_iter().map(parse_template).collect(),
         };
 
         let mut new_templates = vec![];
@@ -236,7 +235,7 @@ impl TextStuff {
         self.candidate_templates = candidate_templates
             .into_iter()
             .map(|ct| {
-                let template = Template::from_string(ct.ink.into_owned());
+                let template = parse_template(ct.ink);
                 let points = ink_to_points(&template.ink, metrics);
                 (template, points, ct.char)
             })
