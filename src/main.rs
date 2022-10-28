@@ -305,11 +305,13 @@ impl Editor {
     }
 
     fn left_margin(&self) -> i32 {
-        LEFT_MARGIN
+        let (_, cols) = max_dimensions(&self.metrics);
+        let width = cols as i32 * self.metrics.width;
+        (DISPLAYWIDTH as i32 - width) / 2
     }
 
     fn right_margin(&self) -> i32 {
-        SCREEN_WIDTH - LEFT_MARGIN - 1200
+        self.left_margin()
     }
 
     pub fn report_error<A, E: Display>(&mut self, result: Result<A, E>) -> Option<A> {
@@ -332,7 +334,7 @@ impl Widget for Editor {
 
     fn render(&self, mut view: View<Msg>) {
         let mut header = view.split_off(Side::Top, TOP_MARGIN);
-        header.split_off(Side::Left, LEFT_MARGIN);
+        header.split_off(Side::Left, self.left_margin());
         header.split_off(Side::Right, self.right_margin());
 
         match self.tab {
@@ -428,7 +430,7 @@ impl Widget for Editor {
 
         {
             let mut footer = view.split_off(Side::Bottom, TOP_MARGIN);
-            footer.split_off(Side::Left, LEFT_MARGIN);
+            footer.split_off(Side::Left, self.left_margin());
             footer.split_off(Side::Right, self.right_margin());
 
             let mut message = match self.tab {
