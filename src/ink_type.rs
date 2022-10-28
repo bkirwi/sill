@@ -164,7 +164,7 @@ impl InkType {
         // Vertical, and very close to a cell boundary.
         if min_y < 0.1
             && max_y > 0.9
-            && (max_x - min_x) < 0.3
+            && (max_x - min_x) < 0.5
             && (center - center.round()).abs() < 0.3
             && center.round() >= 0.0
         {
