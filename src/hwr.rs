@@ -1,4 +1,4 @@
-use crate::{Metrics, TextBuffer, DEFAULT_CHAR_HEIGHT};
+use crate::{Metrics, TextBuffer};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 

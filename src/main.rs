@@ -6,7 +6,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::rc::Rc;
-use std::{env, fs, io, mem, process, thread};
+use std::{env, fs, io, process, thread};
 
 use armrest::app;
 use armrest::app::{Applet, Component, Sender};

@@ -1,7 +1,7 @@
 use crate::grid_ui::Coord;
 use crate::{Metrics, Selection};
 use armrest::ink::Ink;
-use armrest::libremarkable::cgmath::{EuclideanSpace, MetricSpace, Point3, Vector2};
+use armrest::libremarkable::cgmath::{EuclideanSpace, Point3, Vector2};
 use std::collections::HashMap;
 
 /// Naively, a mark is a "scratch out" if it has a lot of ink per unit area,
