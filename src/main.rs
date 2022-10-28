@@ -283,7 +283,7 @@ impl Editor {
     }
 
     fn save_templates(&self) -> io::Result<()> {
-        let file_contents = TemplateFile::new(&self.text_stuff);
+        let file_contents = TemplateFile::new(&self.text_stuff, self.metrics.height);
         // NB: because the bulk of the data is long string content,
         // we don't pay much extra to prettify this!
         serde_json::to_writer_pretty(File::create(&self.template_path)?, &file_contents)?;
@@ -457,7 +457,7 @@ impl Widget for Editor {
                 view.split_off(Side::Right, self.right_margin());
 
                 let written_path: PathBuf = self.meta.path_window.buffer.content_string().into();
-                let entry_height = self.metrics.height * 3 / 2;
+                let entry_height = DEFAULT_CHAR_HEIGHT * 3 / 2;
 
                 let mut buttons = view.split_off(Side::Top, entry_height);
 
@@ -487,7 +487,7 @@ impl Widget for Editor {
                 buttons.leave_rest_blank();
                 view.split_off(Side::Top, entry_height);
 
-                Text::literal(self.metrics.height, &*FONT, "Tabs:").render_split(
+                Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, "Tabs:").render_split(
                     &mut view,
                     Side::Top,
                     0.0,
@@ -576,7 +576,7 @@ impl Widget for Editor {
 
                 view.split_off(Side::Top, entry_height);
 
-                Text::literal(self.metrics.height, &*FONT, "Paths:").render_split(
+                Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, "Paths:").render_split(
                     &mut view,
                     Side::Top,
                     0.0,
@@ -614,7 +614,11 @@ impl Widget for Editor {
                         for row in (text_tab.text.origin.0..).take(text_tab.text.dimensions.0) {
                             let view =
                                 margin_view.split_off(Side::Top, text_tab.text.grid_metrics.height);
-                            let text = Text::literal(30, &*FONT, &format!("{}", row));
+                            let text = Text::literal(
+                                text_tab.text.grid_metrics.height * 3 / 4,
+                                &*FONT,
+                                &format!("{}", row),
+                            );
                             text.render_placed(view, 1.0, 1.0);
                         }
                         margin_view.leave_rest_blank();
@@ -650,7 +654,8 @@ impl Widget for Editor {
                 {
                     let mut view = margin_view.split_off(Side::Top, self.metrics.height);
                     view.split_off(Side::Right, 20);
-                    let text = Text::literal(30, &*FONT, &format!("{}", ct.char));
+                    let text =
+                        Text::literal(self.metrics.height * 3 / 4, &*FONT, &format!("{}", ct.char));
                     text.render_placed(view, 1.0, margin_placement);
                 }
                 margin_view.leave_rest_blank();
@@ -1113,7 +1118,9 @@ fn main() {
         .place_data_file(TEMPLATE_FILE)
         .expect("placing the template data file");
 
-    let metrics = Metrics::new(DEFAULT_CHAR_HEIGHT);
+    let grid_cell_height = 40;
+
+    let metrics = Metrics::new(grid_cell_height);
 
     let atlas = Rc::new(Atlas::new());
 

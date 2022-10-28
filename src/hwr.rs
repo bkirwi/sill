@@ -1,4 +1,4 @@
-use crate::{Metrics, TextBuffer};
+use crate::{Metrics, TextBuffer, DEFAULT_CHAR_HEIGHT};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 
@@ -31,10 +31,16 @@ pub fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
     points
 }
 
+fn default_char_height() -> i32 {
+    40
+}
+
 /// The format of the template file, used only for persistence. The cows allow us to save some
 /// copying when writing the file; see `new` for the borrow.
 #[derive(Serialize, Deserialize)]
 pub struct TemplateFile<'a> {
+    #[serde(default = "default_char_height")]
+    template_height: i32,
     templates: BTreeMap<char, Vec<Cow<'a, str>>>,
     #[serde(default)]
     candidate_templates: Vec<TemplateFileEntry<'a>>,
@@ -49,6 +55,7 @@ pub struct TemplateFileEntry<'a> {
 impl<'a> Default for TemplateFile<'a> {
     fn default() -> Self {
         TemplateFile {
+            template_height: default_char_height(),
             templates: Default::default(),
             candidate_templates: vec![],
         }
@@ -56,7 +63,7 @@ impl<'a> Default for TemplateFile<'a> {
 }
 
 impl<'a> TemplateFile<'a> {
-    pub fn new(stuff: &'a TextStuff) -> TemplateFile<'a> {
+    pub fn new(stuff: &'a TextStuff, template_height: i32) -> TemplateFile<'a> {
         let mut entries = BTreeMap::new();
         for ts in &stuff.templates {
             let strings: Vec<Cow<str>> = ts
@@ -81,6 +88,7 @@ impl<'a> TemplateFile<'a> {
             .collect();
 
         TemplateFile {
+            template_height,
             templates: entries,
             candidate_templates,
         }
@@ -180,14 +188,36 @@ impl TextStuff {
 
     pub fn load_from_file(&mut self, template_file: TemplateFile, metrics: &Metrics) {
         let TemplateFile {
+            template_height,
             mut templates,
             candidate_templates,
         } = template_file;
+
+        let scale = if template_height == metrics.height {
+            None
+        } else {
+            // if metrics.height is larger than the height of the serialized templates, scale up!
+            Some(metrics.height as f32 / template_height as f32)
+        };
+
         let char_data = |ch: char, strings: Vec<Cow<str>>| CharTemplates {
             char: ch,
             templates: strings
                 .into_iter()
                 .map(|s| Template::from_string(s.into_owned()))
+                .map(|t| match scale {
+                    None => t,
+                    Some(scale) => {
+                        let mut ink = Ink::new();
+                        for stroke in t.ink.strokes() {
+                            for p in stroke {
+                                ink.push(p.x * scale, p.y * scale, p.z);
+                            }
+                            ink.pen_up();
+                        }
+                        Template::from_ink(ink)
+                    }
+                })
                 .collect(),
         };
 
