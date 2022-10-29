@@ -298,6 +298,10 @@ impl TextStuff {
     }
 
     pub fn init_recognizer(&mut self, metrics: &Metrics) {
+        // Discard trivial or invalid templates.
+        for ct in &mut self.templates {
+            ct.templates.retain(|t| t.ink.len() > 1);
+        }
         self.char_recognizer = CharRecognizer::new(self.templates.iter().flat_map(|ct| {
             let c = ct.char;
             ct.templates
@@ -312,6 +316,7 @@ impl TextStuff {
                     let c = ct.char;
                     ct.templates
                         .iter()
+                        .filter(|t| t.ink.len() > 1)
                         .map(move |t| (Points::normalize(&t.ink), c))
                 }),
         );

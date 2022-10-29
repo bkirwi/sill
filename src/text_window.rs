@@ -373,6 +373,9 @@ impl TextWindow {
             }
             InkType::BigGlyph { token } => {
                 let ink = token;
+                if ink.len() <= 1 {
+                    return;
+                }
                 let best_match = text_stuff
                     .big_recognizer
                     .best_match(&Points::normalize(&ink), f32::MAX);
