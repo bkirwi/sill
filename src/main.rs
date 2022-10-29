@@ -664,14 +664,17 @@ impl Widget for Editor {
             Tab::Template => {
                 let mut margin_view = view.split_off(Side::Left, self.left_margin());
                 let margin_placement = self.metrics.baseline as f32 / self.metrics.height as f32;
+                margin_view.split_off(
+                    Side::Top,
+                    self.metrics.height - self.metrics.baseline + GRID_BORDER,
+                );
                 for ct in self.text_stuff.templates[self.template_offset..]
                     .iter()
                     .take(self.max_dimensions().0)
                 {
                     let mut view = margin_view.split_off(Side::Top, self.metrics.height);
                     view.split_off(Side::Right, 20);
-                    let text =
-                        Text::literal(self.metrics.height * 3 / 4, &*FONT, &format!("{}", ct.char));
+                    let text = Text::literal(self.metrics.height, &*FONT, &format!("{}", ct.char));
                     text.render_placed(view, 1.0, margin_placement);
                 }
                 margin_view.leave_rest_blank();
