@@ -54,11 +54,8 @@ pub struct TemplateFileEntry<'a> {
 
 impl<'a> Default for TemplateFile<'a> {
     fn default() -> Self {
-        TemplateFile {
-            template_height: default_char_height(),
-            templates: Default::default(),
-            candidate_templates: vec![],
-        }
+        let bytes = include_bytes!("templates.json");
+        serde_json::from_slice(bytes).expect("parsing known-correct template.json")
     }
 }
 
