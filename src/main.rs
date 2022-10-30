@@ -749,8 +749,8 @@ fn suggestions(current_path: &str) -> io::Result<Vec<String>> {
 }
 
 fn max_dimensions(metrics: &Metrics) -> Coord {
-    let rows = (SCREEN_HEIGHT - TOP_MARGIN * 2) / metrics.height;
-    let cols = (SCREEN_WIDTH - LEFT_MARGIN * 2) / metrics.width;
+    let rows = (SCREEN_HEIGHT - TOP_MARGIN * 2 - GRID_BORDER * 2) / metrics.height;
+    let cols = (SCREEN_WIDTH - LEFT_MARGIN * 2 - GRID_BORDER * 2) / metrics.width;
     (rows as usize, cols as usize)
 }
 
