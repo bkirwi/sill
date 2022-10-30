@@ -191,6 +191,13 @@ and terminal-based apps like `vim` or `emacs` won't work.
 Nonetheless, quite a lot of command-line tools work fine
 in this environment.
 
+# Configuration
+
+Sill can be configured via a
+file at `.config/sill/sill.toml`.
+For available options, see [the default
+config](src/sill.toml).
+
 # Limitations
 
 Sill is experimental software. While it's usable enough

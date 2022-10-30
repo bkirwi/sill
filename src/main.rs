@@ -57,7 +57,7 @@ const HELP_TEXT: &str = include_str!("../README.md");
 static APP_NAME: Lazy<String> =
     Lazy::new(|| format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(default)]
 struct Config {
     cell_height: i32,
@@ -1093,4 +1093,16 @@ fn main() {
     });
 
     app.run(&mut component)
+}
+
+#[cfg(test)]
+mod test {
+    use crate::Config;
+
+    #[test]
+    fn test_default_config() {
+        let conf = include_str!("sill.toml");
+        let conf: Config = toml::from_str(&conf).expect("loading known_valid config");
+        assert_eq!(conf, Config::default())
+    }
 }

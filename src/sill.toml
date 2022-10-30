@@ -1,0 +1,8 @@
+# This is the default configuration for
+# `sill`, loaded if no other config is
+# found.
+
+# cell_height controls the height, in
+# pixels, of each cell in a text grid.
+# Valid values range from 20 to 80.
+cell_height = 40
