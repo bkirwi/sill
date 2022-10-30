@@ -11,22 +11,23 @@ use std::{env, fs, io, process, thread};
 use armrest::app;
 use armrest::app::{Applet, Component, Sender};
 use armrest::ink::Ink;
-use armrest::libremarkable::cgmath::Zero;
+
 use armrest::libremarkable::framebuffer::cgmath::Vector2;
-use armrest::libremarkable::framebuffer::common::{color, DISPLAYHEIGHT, DISPLAYWIDTH};
-use armrest::ui::{Canvas, Fragment, Side, Text, View, Widget};
+use armrest::libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
+use armrest::ui::{Fragment, Side, Text, View, Widget};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use xdg::BaseDirectories;
 
-use crate::text_window::Selection;
 use font::*;
 use grid_ui::*;
 use hwr::*;
 use ink_type::InkType;
 use text_buffer::*;
+use text_window::Selection;
 use text_window::TextMessage;
 use text_window::TextWindow;
+use widgets::*;
 
 mod font;
 mod grid_ui;
@@ -35,6 +36,7 @@ mod ink_type;
 mod text_buffer;
 mod text_window;
 mod util;
+mod widgets;
 
 static BASE_DIRS: Lazy<BaseDirectories> =
     Lazy::new(|| BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).unwrap());
@@ -343,7 +345,7 @@ impl Widget for Editor {
                 head_text.render_split(&mut header, Side::Left, 0.5);
                 Spaced(
                     40,
-                    &[button(
+                    &[Button::new(
                         "templates",
                         Msg::SwitchTab { tab: Tab::Template },
                         true,
@@ -361,16 +363,13 @@ impl Widget for Editor {
                             .map(|s| s.to_string_lossy())
                             .unwrap_or(Cow::Borrowed("<unnamed file>"));
 
-                        button(&path_str, Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
-                            &mut header,
-                            Side::Left,
-                            0.5,
-                        );
+                        Button::new(&path_str, Msg::SwitchTab { tab: Tab::Meta }, true)
+                            .render_split(&mut header, Side::Left, 0.5);
 
                         Spaced(
                             40,
                             &[
-                                button(
+                                Button::new(
                                     "undo",
                                     Msg::Tab {
                                         id,
@@ -378,7 +377,7 @@ impl Widget for Editor {
                                     },
                                     !text_tab.text.undos.is_empty(),
                                 ),
-                                button(
+                                Button::new(
                                     "redo",
                                     Msg::Tab {
                                         id,
@@ -386,7 +385,7 @@ impl Widget for Editor {
                                     },
                                     !text_tab.text.redos.is_empty(),
                                 ),
-                                button(
+                                Button::new(
                                     "save",
                                     Msg::Tab {
                                         id,
@@ -400,7 +399,7 @@ impl Widget for Editor {
                     }
                     TabType::Shell(_) => {
                         let name = format!("Shell #{}", id);
-                        button(&name, Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
+                        Button::new(&name, Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
                             &mut header,
                             Side::Left,
                             0.5,
@@ -408,7 +407,7 @@ impl Widget for Editor {
 
                         Spaced(
                             40,
-                            &[button(
+                            &[Button::new(
                                 "submit",
                                 Msg::Tab {
                                     id,
@@ -422,7 +421,7 @@ impl Widget for Editor {
                 };
             }
             Tab::Template => {
-                let head_text = button("templates", Msg::SwitchTab { tab: Tab::Meta }, true);
+                let head_text = Button::new("templates", Msg::SwitchTab { tab: Tab::Meta }, true);
                 head_text.render_split(&mut header, Side::Left, 0.5);
                 header.leave_rest_blank();
             }
@@ -488,8 +487,8 @@ impl Widget for Editor {
                 Spaced(
                     40,
                     &[
-                        button("new file", Msg::New, !written_path.exists()),
-                        button(
+                        Button::new("new file", Msg::New, !written_path.exists()),
+                        Button::new(
                             "new shell",
                             Msg::OpenShell {
                                 working_dir: written_dir,
@@ -518,7 +517,7 @@ impl Widget for Editor {
                                 .and_then(|p| p.file_name())
                                 .map(|p| p.to_string_lossy())
                                 .unwrap_or(Cow::Borrowed("<unnamed file>"));
-                            let tab_label = button(
+                            let tab_label = Button::new(
                                 &path_str,
                                 Msg::SwitchTab {
                                     tab: Tab::Edit(*tab_id),
@@ -532,7 +531,7 @@ impl Widget for Editor {
                             Spaced(
                                 40,
                                 &[
-                                    button(
+                                    Button::new(
                                         "save as",
                                         Msg::Tab {
                                             id: *tab_id,
@@ -542,7 +541,7 @@ impl Widget for Editor {
                                         },
                                         !written_path.exists(),
                                     ),
-                                    button(
+                                    Button::new(
                                         "close",
                                         Msg::Tab {
                                             id: *tab_id,
@@ -560,7 +559,7 @@ impl Widget for Editor {
                         }
                         TabType::Shell(_shell_tab) => {
                             let name = format!("Shell #{}", tab_id);
-                            let tab_label = button(
+                            let tab_label = Button::new(
                                 &name,
                                 Msg::SwitchTab {
                                     tab: Tab::Edit(*tab_id),
@@ -572,7 +571,7 @@ impl Widget for Editor {
                             tab_label.render_split(&mut tab_view, Side::Left, 0.5);
                             Spaced(
                                 40,
-                                &[button(
+                                &[Button::new(
                                     "close",
                                     Msg::Tab {
                                         id: *tab_id,
@@ -615,7 +614,7 @@ impl Widget for Editor {
                         }
                     };
 
-                    button(s, msg, true).render_split(&mut suggest_view, Side::Left, 0.5);
+                    Button::new(s, msg, true).render_split(&mut suggest_view, Side::Left, 0.5);
                 }
             }
             Tab::Edit(id) => {
@@ -1034,95 +1033,6 @@ impl Applet for Editor {
             Tab::Meta => "meta",
             Tab::Edit { .. } => "edit",
             Tab::Template => "template",
-        }
-    }
-}
-
-#[derive(Hash)]
-struct Underline(i32);
-const UNDERLINE: i32 = 3;
-
-impl Fragment for Underline {
-    fn draw(&self, canvas: &mut Canvas) {
-        let size = canvas.bounds().size();
-        for y in 0..size.y.min(UNDERLINE) {
-            for x in y..(size.x.min(self.0) - y) {
-                canvas.write(x, y, color::GRAY(200));
-            }
-        }
-    }
-}
-
-struct Button<T: Widget> {
-    widget: T,
-    on_tap: Option<T::Message>,
-}
-
-impl<T: Widget> Widget for Button<T>
-where
-    T::Message: Clone,
-{
-    type Message = T::Message;
-
-    fn size(&self) -> Vector2<i32> {
-        let mut size = self.widget.size();
-        size.y += UNDERLINE;
-        size
-    }
-
-    fn render(&self, mut view: View<Self::Message>) {
-        if let Some(msg) = &self.on_tap {
-            view.handlers().pad(10).on_tap(msg.clone());
-        }
-        self.widget.render_split(&mut view, Side::Top, 0.0);
-        if self.on_tap.is_some() {
-            view.split_off(Side::Top, UNDERLINE)
-                .draw(&Underline(self.size().x))
-        }
-    }
-}
-
-fn button(text: &str, msg: Msg, active: bool) -> Button<Text<Msg>> {
-    let builder = Text::builder(DEFAULT_CHAR_HEIGHT, &*FONT);
-    let builder = if active {
-        builder.weight(TEXT_WEIGHT)
-    } else {
-        builder.weight(0.5)
-    };
-    let text = builder.literal(text).into_text();
-
-    Button {
-        widget: text,
-        on_tap: if active { Some(msg) } else { None },
-    }
-}
-
-struct Spaced<'a, A>(i32, &'a [A]);
-
-impl<'a, A: Widget> Widget for Spaced<'a, A> {
-    type Message = A::Message;
-
-    fn size(&self) -> Vector2<i32> {
-        let mut size: Vector2<i32> = Vector2::zero();
-        let Spaced(pad, widgets) = self;
-        for (i, a) in widgets.iter().enumerate() {
-            if i != 0 {
-                size.x += *pad;
-            }
-            let a_size = a.size();
-            size.x += a_size.x;
-            size.y = size.y.max(a_size.y);
-        }
-        size
-    }
-
-    fn render(&self, mut view: View<Self::Message>) {
-        let Spaced(pad, widgets) = self;
-        for (i, a) in widgets.iter().enumerate() {
-            if i != 0 {
-                view.split_off(Side::Left, *pad);
-            }
-            a.render_split(&mut view, Side::Left, 0.0);
         }
     }
 }

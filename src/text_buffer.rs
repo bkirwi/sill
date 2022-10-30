@@ -1,5 +1,3 @@
-
-
 type Coord = (usize, usize);
 
 pub fn add_coord(a: Coord, b: Coord) -> Coord {

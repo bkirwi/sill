@@ -9,6 +9,9 @@ pub static FONT: Lazy<Font<'static>> = Lazy::new(|| {
     Font::from_bytes(font_bytes).unwrap()
 });
 
+pub(crate) const DEFAULT_CHAR_HEIGHT: i32 = 40;
+pub(crate) const TEXT_WEIGHT: f32 = 0.9;
+
 pub fn text_literal(height: i32, text: &str) -> TextFragment {
     // NB: Inconsolata has zero line gap.
     // TODO: proper centering instead of this manual hack.
@@ -21,7 +24,7 @@ pub fn text_literal(height: i32, text: &str) -> TextFragment {
         .to_fragment()
 }
 
-#[derive(Hash, Clone)]
+#[derive(Hash, Clone, Copy)]
 pub struct Metrics {
     pub height: i32,
     pub width: i32,
