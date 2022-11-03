@@ -12,6 +12,7 @@ use armrest::app;
 use armrest::app::{Applet, Component, Sender};
 use armrest::ink::Ink;
 
+use anyhow;
 use armrest::libremarkable::framebuffer::cgmath::Vector2;
 use armrest::libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
 use armrest::ui::{Fragment, Side, Text, View, Widget};
@@ -1037,19 +1038,26 @@ impl Applet for Editor {
     }
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let mut app = app::App::new();
 
-    let template_path = BASE_DIRS
-        .place_data_file(TEMPLATE_FILE)
-        .expect("placing the template data file");
+    let template_path = BASE_DIRS.place_data_file(TEMPLATE_FILE)?;
 
-    let config = if let Some(config_path) = BASE_DIRS.find_config_file(CONFIG_FILE) {
-        let config_string =
-            fs::read_to_string(config_path).expect("reading the discovered config file");
-        toml::from_str(&config_string).expect("parsing the config file")
-    } else {
-        Config::default()
+    let config: Config = {
+        let config_path = BASE_DIRS.place_config_file(CONFIG_FILE)?;
+
+        let config_str = match fs::read(&config_path) {
+            Ok(file) => Cow::Owned(file),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                // File does not exist, which is expected on first boot.
+                let bytes: &[u8] = include_bytes!("sill.toml");
+                fs::write(config_path, bytes)?;
+                Cow::Borrowed(bytes)
+            }
+            Err(e) => Err(e)?,
+        };
+
+        toml::from_slice(&config_str)?
     };
 
     let metrics = Metrics::new(config.cell_height.clamp(20, 80));
@@ -1092,7 +1100,9 @@ fn main() {
         widget
     });
 
-    app.run(&mut component)
+    app.run(&mut component);
+
+    Ok(())
 }
 
 #[cfg(test)]
