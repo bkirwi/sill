@@ -15,7 +15,7 @@ use armrest::ink::Ink;
 use anyhow;
 use armrest::libremarkable::framebuffer::cgmath::Vector2;
 use armrest::libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
-use armrest::ui::{Fragment, Side, Text, View, Widget};
+use armrest::ui::{Side, Text, View, Widget};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use xdg::BaseDirectories;
@@ -707,8 +707,6 @@ impl Widget for Editor {
         }
     }
 }
-
-const TEXT_WEIGHT: f32 = 0.9;
 
 const NUM_SUGGESTIONS: usize = 32;
 const MAX_DIR_ENTRIES: usize = 1024;
