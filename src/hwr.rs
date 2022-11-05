@@ -1,4 +1,4 @@
-use crate::{Metrics, TextBuffer};
+use crate::{Config, Metrics, TextBuffer};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 
@@ -183,7 +183,12 @@ impl TextStuff {
         }
     }
 
-    pub fn load_from_file(&mut self, template_file: TemplateFile, metrics: &Metrics) {
+    pub fn load_from_file(
+        &mut self,
+        template_file: TemplateFile,
+        metrics: &Metrics,
+        config: &Config,
+    ) {
         let TemplateFile {
             template_height,
             mut templates,
@@ -217,9 +222,13 @@ impl TextStuff {
             templates: strings.into_iter().map(parse_template).collect(),
         };
 
-        let mut new_templates = vec![];
+        let mut new_templates: Vec<CharTemplates> = vec![];
 
-        for ch in PRINTABLE_ASCII.chars() {
+        for ch in PRINTABLE_ASCII.chars().chain(config.extra_chars()) {
+            // TODO: avoid the quadratic behaviour here.
+            if new_templates.iter().any(|t| t.char == ch) {
+                continue;
+            }
             new_templates.push(char_data(ch, templates.remove(&ch).unwrap_or_default()))
         }
 

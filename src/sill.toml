@@ -1,8 +1,15 @@
 # This is the default configuration for
-# `sill`, loaded if no other config is
+# Sill, loaded if no other config is
 # found.
 
-# cell_height controls the height, in
+# `cell_height` controls the height, in
 # pixels, of each cell in a text grid.
 # Valid values range from 20 to 80.
 cell_height = 40
+
+# extra_chars holds a list of additional
+# characters we'd like to define
+# templates for. These can be single-char
+# strings, like "é", or unicode code points,
+# like "U+00E9".
+extra_chars = []

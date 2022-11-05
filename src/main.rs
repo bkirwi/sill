@@ -17,9 +17,9 @@ use armrest::libremarkable::framebuffer::cgmath::Vector2;
 use armrest::libremarkable::framebuffer::common::{DISPLAYHEIGHT, DISPLAYWIDTH};
 use armrest::ui::{Side, Text, View, Widget};
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
 use xdg::BaseDirectories;
 
+use config::*;
 use font::*;
 use grid_ui::*;
 use hwr::*;
@@ -30,6 +30,7 @@ use text_window::TextMessage;
 use text_window::TextWindow;
 use widgets::*;
 
+mod config;
 mod font;
 mod grid_ui;
 mod hwr;
@@ -57,18 +58,6 @@ const HELP_TEXT: &str = include_str!("../README.md");
 
 static APP_NAME: Lazy<String> =
     Lazy::new(|| format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
-
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(default)]
-struct Config {
-    cell_height: i32,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config { cell_height: 40 }
-    }
-}
 
 #[derive(Clone)]
 pub enum Msg {
@@ -263,6 +252,7 @@ impl TextTab {
 struct Editor {
     sender: Sender<Msg>,
     metrics: Metrics,
+    config: Config,
 
     error_string: String,
 
@@ -294,7 +284,8 @@ impl Editor {
             Err(e) => return Err(e),
         };
 
-        self.text_stuff.load_from_file(data, &self.metrics);
+        self.text_stuff
+            .load_from_file(data, &self.metrics, &self.config);
 
         Ok(())
     }
@@ -1080,6 +1071,7 @@ fn main() -> anyhow::Result<()> {
             sender,
             template_path,
             metrics: metrics.clone(),
+            config,
             error_string: "".to_string(),
             atlas: atlas.clone(),
             tab: Tab::Meta,
