@@ -117,6 +117,15 @@ enum TabType {
     Shell(ShellTab),
 }
 
+impl TabType {
+    fn title(&self) -> &str {
+        match self {
+            TabType::Text(t) => &t.title,
+            TabType::Shell(s) => &s.title,
+        }
+    }
+}
+
 struct ShellTab {
     title: String,
     child: Child,
@@ -352,7 +361,7 @@ impl Widget for Editor {
         header.split_off(Side::Right, self.right_margin());
 
         match self.tab {
-            Tab::Meta { .. } => {
+            Tab::Meta => {
                 let head_text = Text::literal(DEFAULT_CHAR_HEIGHT, &*FONT, &*APP_NAME);
                 head_text.render_split(&mut header, Side::Left, 0.5);
                 Spaced(
@@ -509,78 +518,57 @@ impl Widget for Editor {
                     0.0,
                 );
 
-                for (tab_id, _tab) in &self.tabs {
-                    match &self.tabs[tab_id] {
-                        TabType::Text(tab) => {
-                            let tab_label = Button::new(
-                                &tab.title,
-                                Msg::SwitchTab {
-                                    tab: Tab::Edit(*tab_id),
-                                },
-                                true,
-                            );
-                            let mut tab_view = view.split_off(Side::Top, entry_height);
-                            tab_view.split_off(Side::Left, 20);
-                            tab_label.render_split(&mut tab_view, Side::Left, 0.5);
+                for (tab_id, tab) in &self.tabs {
+                    let mut tab_view = view.split_off(Side::Top, entry_height);
+                    tab_view.split_off(Side::Left, 20);
 
-                            Spaced(
-                                40,
-                                &[
-                                    Button::new(
-                                        "save as",
-                                        Msg::Tab {
-                                            id: *tab_id,
-                                            msg: TabMsg::SaveAs {
-                                                path: written_path.clone(),
-                                            },
+                    Button::new(
+                        tab.title(),
+                        Msg::SwitchTab {
+                            tab: Tab::Edit(*tab_id),
+                        },
+                        true,
+                    )
+                    .render_split(&mut tab_view, Side::Left, 0.5);
+
+                    match tab {
+                        TabType::Text(_) => Spaced(
+                            40,
+                            &[
+                                Button::new(
+                                    "save as",
+                                    Msg::Tab {
+                                        id: *tab_id,
+                                        msg: TabMsg::SaveAs {
+                                            path: written_path.clone(),
                                         },
-                                        !written_path.exists(),
-                                    ),
-                                    Button::new(
-                                        "close",
-                                        Msg::Tab {
-                                            id: *tab_id,
-                                            msg: TabMsg::Quit,
-                                        },
-                                        true,
-                                    ),
-                                ],
-                            )
-                            .render_split(
-                                &mut tab_view,
-                                Side::Right,
-                                0.5,
-                            );
-                        }
-                        TabType::Shell(shell_tab) => {
-                            let tab_label = Button::new(
-                                &shell_tab.title,
-                                Msg::SwitchTab {
-                                    tab: Tab::Edit(*tab_id),
-                                },
-                                true,
-                            );
-                            let mut tab_view = view.split_off(Side::Top, entry_height);
-                            tab_view.split_off(Side::Left, 20);
-                            tab_label.render_split(&mut tab_view, Side::Left, 0.5);
-                            Spaced(
-                                40,
-                                &[Button::new(
+                                    },
+                                    !written_path.exists(),
+                                ),
+                                Button::new(
                                     "close",
                                     Msg::Tab {
                                         id: *tab_id,
                                         msg: TabMsg::Quit,
                                     },
                                     true,
-                                )],
-                            )
-                            .render_split(
-                                &mut tab_view,
-                                Side::Right,
-                                0.5,
-                            );
-                        }
-                    }
+                                ),
+                            ],
+                        )
+                        .render_split(&mut tab_view, Side::Right, 0.5),
+                        TabType::Shell(_) => Spaced(
+                            40,
+                            &[Button::new(
+                                "close",
+                                Msg::Tab {
+                                    id: *tab_id,
+                                    msg: TabMsg::Quit,
+                                },
+                                true,
+                            )],
+                        )
+                        .render_split(&mut tab_view, Side::Right, 0.5),
+                    };
                 }
 
                 view.split_off(Side::Top, entry_height);
@@ -1000,6 +988,13 @@ impl Applet for Editor {
                         (TabMsg::SaveAs { path }, TabType::Text(text_tab)) => {
                             if !path.exists() && path.parent().iter().any(|p| p.is_dir()) {
                                 text_tab.path = Some(path);
+                                // TODO: share this logic!
+                                text_tab.title = text_tab
+                                    .path
+                                    .as_ref()
+                                    .and_then(|p| p.file_name())
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .unwrap_or("<unnamed file>".to_string());
                                 let saved = text_tab.save();
                                 if self.report_error(saved).is_some() {
                                     self.tab = Tab::Edit(id)
