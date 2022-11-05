@@ -23,11 +23,9 @@ use config::*;
 use font::*;
 use grid_ui::*;
 use hwr::*;
-use ink_type::InkType;
+use ink_type::*;
 use text_buffer::*;
-use text_window::Selection;
-use text_window::TextMessage;
-use text_window::TextWindow;
+use text_window::*;
 use widgets::*;
 
 mod config;
