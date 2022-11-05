@@ -228,6 +228,7 @@ impl ShellTab {
 }
 
 struct TextTab {
+    title: String,
     path: Option<PathBuf>,
     text: TextWindow,
     dirty: bool,
@@ -346,14 +347,7 @@ impl Widget for Editor {
             Tab::Edit(id) => {
                 match &self.tabs[&id] {
                     TabType::Text(text_tab) => {
-                        let path_str = text_tab
-                            .path
-                            .as_ref()
-                            .and_then(|p| p.file_name())
-                            .map(|s| s.to_string_lossy())
-                            .unwrap_or(Cow::Borrowed("<unnamed file>"));
-
-                        Button::new(&path_str, Msg::SwitchTab { tab: Tab::Meta }, true)
+                        Button::new(&text_tab.title, Msg::SwitchTab { tab: Tab::Meta }, true)
                             .render_split(&mut header, Side::Left, 0.5);
 
                         Spaced(
@@ -501,14 +495,8 @@ impl Widget for Editor {
                 for (tab_id, _tab) in &self.tabs {
                     match &self.tabs[tab_id] {
                         TabType::Text(tab) => {
-                            let path_str = tab
-                                .path
-                                .as_ref()
-                                .and_then(|p| p.file_name())
-                                .map(|p| p.to_string_lossy())
-                                .unwrap_or(Cow::Borrowed("<unnamed file>"));
                             let tab_label = Button::new(
-                                &path_str,
+                                &tab.title,
                                 Msg::SwitchTab {
                                     tab: Tab::Edit(*tab_id),
                                 },
@@ -765,9 +753,15 @@ impl Editor {
 
     fn new_text_tab(&mut self, path: Option<PathBuf>, contents: TextBuffer) {
         let id = self.take_id();
+        let title = path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or("<unnamed file>".to_string());
         self.tabs.insert(
             id,
             TabType::Text(TextTab {
+                title,
                 path,
                 text: TextWindow::new(
                     contents,
