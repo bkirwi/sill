@@ -118,12 +118,30 @@ enum TabType {
 }
 
 struct ShellTab {
+    title: String,
     child: Child,
     shell_output: TextWindow,
     history: VecDeque<TextBuffer>,
 }
 
 impl ShellTab {
+    pub fn working_dir(&self) -> anyhow::Result<PathBuf> {
+        let id = self.child.id();
+        let cwd_link = PathBuf::from(format!("/proc/{id}/cwd"));
+        let link = fs::read_link(&cwd_link)?;
+        Ok(link)
+    }
+
+    pub fn set_title(&mut self) {
+        if let Ok(dir) = self.working_dir() {
+            let last = dir
+                .file_name()
+                .map_or(Cow::Borrowed("/"), |s| s.to_string_lossy());
+            self.title.clear();
+            self.title = format!("{last} $");
+        }
+    }
+
     pub fn new(
         id: usize,
         atlas: Rc<Atlas>,
@@ -219,11 +237,14 @@ impl ShellTab {
             true,
         );
 
-        Ok(ShellTab {
+        let mut tab = ShellTab {
+            title: String::new(),
             child,
             shell_output: TextWindow::new(TextBuffer::empty(), atlas, metrics, dimensions),
             history: Default::default(),
-        })
+        };
+        tab.set_title();
+        Ok(tab)
     }
 }
 
@@ -381,13 +402,9 @@ impl Widget for Editor {
                         )
                         .render_placed(header, 1.0, 0.5);
                     }
-                    TabType::Shell(_) => {
-                        let name = format!("Shell #{}", id);
-                        Button::new(&name, Msg::SwitchTab { tab: Tab::Meta }, true).render_split(
-                            &mut header,
-                            Side::Left,
-                            0.5,
-                        );
+                    TabType::Shell(s) => {
+                        Button::new(&s.title, Msg::SwitchTab { tab: Tab::Meta }, true)
+                            .render_split(&mut header, Side::Left, 0.5);
 
                         Spaced(
                             40,
@@ -535,10 +552,9 @@ impl Widget for Editor {
                                 0.5,
                             );
                         }
-                        TabType::Shell(_shell_tab) => {
-                            let name = format!("Shell #{}", tab_id);
+                        TabType::Shell(shell_tab) => {
                             let tab_label = Button::new(
-                                &name,
+                                &shell_tab.title,
                                 Msg::SwitchTab {
                                     tab: Tab::Edit(*tab_id),
                                 },
@@ -958,6 +974,9 @@ impl Applet for Editor {
                             shell_tab.shell_output.undos.clear();
                             shell_tab.shell_output.frozen_until =
                                 add_coord(shell_tab.shell_output.frozen_until, content_size);
+
+                            // Right place for this?
+                            shell_tab.set_title();
                         }
                         (TabMsg::SubmitShell, TabType::Shell(shell_tab)) => {
                             shell_tab.shell_output.replace(Replace::splice(
