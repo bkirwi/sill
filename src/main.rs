@@ -387,49 +387,50 @@ impl Widget for Editor {
                         Button::new(&text_tab.title, Msg::SwitchTab { tab: Tab::Meta }, true)
                             .render_split(&mut header, Side::Left, 0.5);
 
-                        Spaced(
-                            40,
-                            &[
-                                Button::new(
-                                    "find",
-                                    Msg::SwitchTab {
-                                        tab: Tab::Search {
-                                            id,
-                                            contents: IndexedString::index(
-                                                text_tab.text.buffer.content_string(),
-                                            ),
-                                            results: vec![],
-                                        },
-                                    },
-                                    true,
-                                ),
-                                Button::new(
-                                    "undo",
-                                    Msg::Tab {
+                        let mut buttons = vec![];
+                        if self.config.experimental {
+                            buttons.push(Button::new(
+                                "find",
+                                Msg::SwitchTab {
+                                    tab: Tab::Search {
                                         id,
-                                        msg: TabMsg::Undo,
+                                        contents: IndexedString::index(
+                                            text_tab.text.buffer.content_string(),
+                                        ),
+                                        results: vec![],
                                     },
-                                    !text_tab.text.undos.is_empty(),
-                                ),
-                                Button::new(
-                                    "redo",
-                                    Msg::Tab {
-                                        id,
-                                        msg: TabMsg::Redo,
-                                    },
-                                    !text_tab.text.redos.is_empty(),
-                                ),
-                                Button::new(
-                                    "save",
-                                    Msg::Tab {
-                                        id,
-                                        msg: TabMsg::Save,
-                                    },
-                                    text_tab.path.is_some() && text_tab.dirty,
-                                ),
-                            ],
-                        )
-                        .render_placed(header, 1.0, 0.5);
+                                },
+                                true,
+                            ))
+                        }
+                        buttons.extend([
+                            Button::new(
+                                "undo",
+                                Msg::Tab {
+                                    id,
+                                    msg: TabMsg::Undo,
+                                },
+                                !text_tab.text.undos.is_empty(),
+                            ),
+                            Button::new(
+                                "redo",
+                                Msg::Tab {
+                                    id,
+                                    msg: TabMsg::Redo,
+                                },
+                                !text_tab.text.redos.is_empty(),
+                            ),
+                            Button::new(
+                                "save",
+                                Msg::Tab {
+                                    id,
+                                    msg: TabMsg::Save,
+                                },
+                                text_tab.path.is_some() && text_tab.dirty,
+                            ),
+                        ]);
+
+                        Spaced(40, &buttons).render_placed(header, 1.0, 0.5);
                     }
                     TabType::Shell(s) => {
                         Button::new(&s.title, Msg::SwitchTab { tab: Tab::Meta }, true)

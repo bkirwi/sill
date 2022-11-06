@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub cell_height: i32,
     pub extra_chars: Vec<String>,
+    pub experimental: bool,
 }
 
 impl Config {
@@ -32,6 +33,7 @@ impl Default for Config {
         Config {
             cell_height: 40,
             extra_chars: vec![],
+            experimental: false,
         }
     }
 }
