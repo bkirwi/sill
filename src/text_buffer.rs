@@ -175,6 +175,40 @@ impl Replace {
     }
 }
 
+#[derive(Clone)]
+pub struct IndexedString {
+    string: String,
+    line_ends: Vec<usize>,
+}
+
+impl IndexedString {
+    pub fn as_str(&self) -> &str {
+        &self.string
+    }
+
+    pub fn index(string: String) -> IndexedString {
+        let line_ends = string.match_indices('\n').map(|(n, _)| n + 1).collect();
+        IndexedString { string, line_ends }
+    }
+
+    pub fn line(&self, line_no: usize) -> &str {
+        let start = line_no.checked_sub(1).map_or(0, |i| self.line_ends[i]);
+        let end = self
+            .line_ends
+            .get(line_no)
+            .copied()
+            .unwrap_or(self.string.len());
+        &self.string[start..end]
+    }
+
+    pub fn line_number(&self, index: usize) -> usize {
+        match self.line_ends.binary_search(&index) {
+            Ok(i) => i + 1,
+            Err(i) => i,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

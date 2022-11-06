@@ -61,6 +61,7 @@ static APP_NAME: Lazy<String> =
 pub enum Msg {
     MetaPath { current_path: String },
     SwitchTab { tab: Tab },
+    SearchResult(usize, usize),
     Write { ink: Ink },
     Erase { ink: Ink },
     Swipe { towards: Side },
@@ -108,6 +109,11 @@ pub enum Tab {
     Meta,
     Template,
     Edit(usize),
+    Search {
+        id: usize,
+        contents: IndexedString,
+        results: Vec<usize>,
+    },
 }
 
 type Coord = (usize, usize);
@@ -291,6 +297,7 @@ struct Editor {
     tab: Tab,
 
     meta: Meta,
+    search_window: TextWindow,
 
     // template stuff
     template_path: PathBuf,
@@ -384,6 +391,19 @@ impl Widget for Editor {
                             40,
                             &[
                                 Button::new(
+                                    "find",
+                                    Msg::SwitchTab {
+                                        tab: Tab::Search {
+                                            id,
+                                            contents: IndexedString::index(
+                                                text_tab.text.buffer.content_string(),
+                                            ),
+                                            results: vec![],
+                                        },
+                                    },
+                                    true,
+                                ),
+                                Button::new(
                                     "undo",
                                     Msg::Tab {
                                         id,
@@ -435,6 +455,9 @@ impl Widget for Editor {
                 head_text.render_split(&mut header, Side::Left, 0.5);
                 header.leave_rest_blank();
             }
+            Tab::Search { id, .. } => {
+                header.leave_rest_blank();
+            }
         }
 
         {
@@ -452,6 +475,7 @@ impl Widget for Editor {
                     };
                     format!("[{row}:{col}] ")
                 }
+                Tab::Search { .. } => "".to_string(),
             };
 
             message.push_str(&self.error_string);
@@ -685,6 +709,28 @@ impl Widget for Editor {
                     },
                 );
             }
+            Tab::Search {
+                id,
+                contents,
+                results,
+            } => {
+                // TODO: line numbers!
+                view.split_off(Side::Left, self.left_margin());
+
+                self.search_window
+                    .borrow()
+                    .map(|message| match message {
+                        TextMessage::Write(ink) => Msg::Write { ink },
+                        TextMessage::Erase(ink) => Msg::Erase { ink },
+                    })
+                    .render_split(&mut view, Side::Top, 0.0);
+
+                for result in results {
+                    let line = contents.line(*result);
+                    let button = Button::new(line, Msg::SearchResult(*id, *result), true);
+                    button.render_split(&mut view, Side::Top, 0.0);
+                }
+            }
         }
     }
 }
@@ -846,6 +892,25 @@ impl Applet for Editor {
                         }
                     }
                 }
+                Tab::Search {
+                    id,
+                    contents,
+                    results,
+                } => {
+                    if let Some(ink_type) =
+                        InkType::classify(&self.metrics, ink, &self.search_window.selection())
+                    {
+                        self.search_window.ink_row(ink_type, &mut self.text_stuff);
+                        // TODO: search
+                        let query = self.search_window.buffer.content_string();
+                        *results = contents
+                            .as_str()
+                            .match_indices(query.as_str())
+                            .take(16)
+                            .map(|(i, _)| contents.line_number(i))
+                            .collect();
+                    }
+                }
             },
             Msg::Erase { ink } => match self.tab {
                 Tab::Meta => {
@@ -863,6 +928,9 @@ impl Applet for Editor {
                     }
                     _ => {}
                 },
+                Tab::Search { .. } => {
+                    self.search_window.erase(ink);
+                }
             },
             Msg::SwitchTab { tab } => {
                 if matches!(self.tab, Tab::Template) {
@@ -904,7 +972,7 @@ impl Applet for Editor {
                         _ => {}
                     }
                 }
-                Tab::Meta { .. } => {
+                _ => {
                     // Nothing to swipe here!
                 }
             },
@@ -1019,6 +1087,15 @@ impl Applet for Editor {
                     // TODO: log?
                 }
             }
+            Msg::SearchResult(id, line) => {
+                self.tab = Tab::Edit(id);
+                match self.tabs.get_mut(&id).unwrap() {
+                    TabType::Text(tab) => {
+                        tab.text.origin = (line, 0);
+                    }
+                    TabType::Shell(_) => {}
+                }
+            }
         }
 
         None
@@ -1029,6 +1106,7 @@ impl Applet for Editor {
             Tab::Meta => "meta",
             Tab::Edit { .. } => "edit",
             Tab::Template => "template",
+            Tab::Search { .. } => "search",
         }
     }
 }
@@ -1072,6 +1150,9 @@ fn main() -> anyhow::Result<()> {
         (1, max_dimensions.1),
     ));
 
+    let mut search_window = meta.path_window.clone();
+    search_window.buffer = TextBuffer::empty();
+
     let mut component = Component::with_sender(app.wakeup(), |sender| {
         let mut widget = Editor {
             sender,
@@ -1085,6 +1166,7 @@ fn main() -> anyhow::Result<()> {
             text_stuff: TextStuff::new(),
             next_tab_id: 0,
             tabs: BTreeMap::new(),
+            search_window,
             meta,
         };
 
