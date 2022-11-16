@@ -1,4 +1,5 @@
-use crate::{text_literal, Metrics, Vector2};
+use crate::font::*;
+use armrest::libremarkable::cgmath::Vector2;
 use armrest::libremarkable::framebuffer::common::color;
 use armrest::libremarkable::framebuffer::FramebufferIO;
 use armrest::ui::{Cached, Canvas, Fragment, Side, View};

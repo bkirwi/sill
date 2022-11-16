@@ -1,5 +1,6 @@
+use crate::font::Metrics;
 use crate::grid_ui::Coord;
-use crate::{Metrics, Selection};
+use crate::text_window::Selection;
 use armrest::ink::Ink;
 use armrest::libremarkable::cgmath::{EuclideanSpace, Point3, Vector2};
 use std::collections::HashMap;

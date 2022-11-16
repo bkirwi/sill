@@ -1,4 +1,4 @@
-use crate::{Config, Metrics, TextBuffer};
+use crate::{config::Config, font::Metrics, text_buffer::TextBuffer};
 use armrest::dollar::Points;
 use armrest::ink::Ink;
 

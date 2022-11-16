@@ -1,7 +1,12 @@
+use crate::font::Metrics;
+use crate::grid_ui::{draw_grid, Atlas, Coord, GridCell, GRID_BORDER};
+use crate::hwr::{ink_to_points, TextStuff};
+use crate::ink_type::InkType;
+use crate::text_buffer::{add_coord, diff_coord, Replace, TextBuffer};
 use crate::util::rotate_queue;
-use crate::*;
 use armrest::dollar::Points;
 use armrest::ink::Ink;
+use armrest::libremarkable::cgmath::Vector2;
 use armrest::ui::{View, Widget};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};

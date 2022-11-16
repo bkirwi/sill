@@ -19,24 +19,14 @@ use armrest::ui::{Side, Text, View, Widget};
 use once_cell::sync::Lazy;
 use xdg::BaseDirectories;
 
-use config::*;
-use font::*;
-use grid_ui::*;
-use hwr::*;
-use ink_type::*;
-use text_buffer::*;
-use text_window::*;
-use widgets::*;
-
-mod config;
-mod font;
-mod grid_ui;
-mod hwr;
-mod ink_type;
-mod text_buffer;
-mod text_window;
-mod util;
-mod widgets;
+use sill::config::*;
+use sill::font::*;
+use sill::grid_ui::*;
+use sill::hwr::*;
+use sill::ink_type::*;
+use sill::text_buffer::*;
+use sill::text_window::*;
+use sill::widgets::*;
 
 static BASE_DIRS: Lazy<BaseDirectories> =
     Lazy::new(|| BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).unwrap());
