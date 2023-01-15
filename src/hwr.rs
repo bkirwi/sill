@@ -22,8 +22,26 @@ pub const PRINTABLE_ASCII: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi
 pub fn ink_to_points(ink: &Ink, metrics: &Metrics) -> Points {
     let mut points = Points::resample(ink);
 
+    let mut max = f32::MIN;
+    let mut min = f32::MAX;
+    for p in points.points() {
+        max = max.max(p.y);
+        min = min.min(p.y);
+    }
+
+    fn clamp(value: f32, baseline: f32, height: f32) -> f32 {
+        let grid = height / 8.0;
+        let value = value - baseline;
+        let value = (value / grid).floor() * grid;
+        value + baseline
+    }
+    let max = clamp(max, metrics.baseline as f32, metrics.height as f32);
+    let min = clamp(min, metrics.baseline as f32, metrics.height as f32);
+    let average = (max + min) / 2.0;
+
     let mut center = points.centroid();
-    center.y = metrics.height as f32 / 2.0;
+    center.y -= average;
+    center.y += metrics.height as f32 / 2.0;
     points.recenter_on(center);
 
     points.scale_by(1.0 / metrics.width as f32);
