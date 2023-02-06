@@ -3,6 +3,8 @@ use armrest::dollar::Points;
 use armrest::ink::Ink;
 
 use crate::util::rotate_queue;
+use armrest::libremarkable::cgmath::MetricSpace;
+use armrest::libremarkable::cgmath::Point2;
 use serde::Deserialize;
 use serde::Serialize;
 use std::borrow::Cow;
@@ -160,7 +162,22 @@ impl CharRecognizer {
             return None;
         }
 
-        let (best, score) = query.recognize(&self.templates);
+        let (best, score) = self
+            .templates
+            .iter()
+            .map(|p| {
+                query
+                    .points()
+                    .iter()
+                    .zip(p.points().iter())
+                    .map(|(p0, p1)| p0.distance2(*p1))
+                    .sum::<f32>()
+            })
+            .enumerate()
+            .min_by(|(_, l), (_, r)| l.total_cmp(r))
+            .expect("nonempty list");
+
+        // let (best, score) = query.recognize(&self.templates);
         // Put good matches at the beginning of the vec. This makes matching faster:
         // if we find a good match early on, we can abandon bad ones sooner.
         self.promote(best);
@@ -328,9 +345,14 @@ impl TextStuff {
         }
         self.char_recognizer = CharRecognizer::new(self.templates.iter().flat_map(|ct| {
             let c = ct.char;
-            ct.templates
-                .iter()
-                .map(move |t| (ink_to_points(&t.ink, metrics), c))
+            ct.templates.iter().flat_map(move |t| {
+                let points = |dy| {
+                    let mut p = ink_to_points(&t.ink, metrics);
+                    p.recenter_on(Point2::new(0.0, dy));
+                    p
+                };
+                [(points(4.0), c), (points(0.0), c), (points(-4.0), c)]
+            })
         }));
         self.big_recognizer = CharRecognizer::new(
             self.templates
