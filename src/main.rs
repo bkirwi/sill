@@ -142,7 +142,6 @@ impl ShellTab {
             let last = dir
                 .file_name()
                 .map_or(Cow::Borrowed("/"), |s| s.to_string_lossy());
-            self.title.clear();
             self.title = format!("{last} $");
         }
     }
@@ -171,7 +170,8 @@ impl ShellTab {
             .args([
                 // Disables readline... we're the ones implementing editing!
                 "--noediting",
-                // Use our custom rcfile, which can do things like
+                // Use our custom rcfile, so users can customize the shell
+                // without having to hack up their normal .bashrc.
                 "--rcfile",
             ])
             .arg(rcfile.into_os_string())
