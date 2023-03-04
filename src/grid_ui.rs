@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-const GRID_LINE_COLOR: color = color::GRAY(80);
-const GUIDE_LINE_COLOR: color = color::GRAY(80);
+const GRID_LINE_COLOR: color = color::GRAY(127);
+const GUIDE_LINE_COLOR: color = color::GRAY(127);
 
 pub type Coord = (usize, usize);
 
@@ -99,15 +99,14 @@ impl Fragment for GridCell {
 
         let base_pixel = canvas.bounds().top_left;
         let size = canvas.bounds().size();
-        let fb = canvas.framebuffer();
 
         let mut darken = move |x: i32, y: i32, color: color| {
             let pixel = base_pixel + Vector2::new(x, y);
             let read_pixel = pixel.map(|c| c as u32);
-            let [r0, g0, b0] = fb.read_pixel(read_pixel).to_rgb8();
+            let [r0, g0, b0] = canvas.framebuffer().read_pixel(read_pixel).to_rgb8();
             let [r1, g1, b1] = color.to_rgb8();
             let combined = color::RGB(r0.min(r1), g0.min(g1), b0.min(b1));
-            fb.write_pixel(pixel, combined);
+            canvas.write(x, y, combined);
         };
 
         let top_line = self.baseline - size.y * 3 / 4;

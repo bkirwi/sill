@@ -10,13 +10,18 @@ pub static FONT: Lazy<Font<'static>> = Lazy::new(|| {
 });
 
 pub(crate) const DEFAULT_CHAR_HEIGHT: i32 = 40;
-pub(crate) const TEXT_WEIGHT: f32 = 0.9;
+pub(crate) const TEXT_WEIGHT: f32 = 1.0;
 
 pub fn text_literal(height: i32, text: &str) -> TextFragment {
+    let pixel_width = FONT
+        .glyph('A')
+        .scaled(Scale::uniform(1.0))
+        .h_metrics()
+        .advance_width;
     // NB: Inconsolata has zero line gap.
     // TODO: proper centering instead of this manual hack.
     Text::builder(height, &*FONT)
-        .scale(1.5)
+        .scale(0.5 / pixel_width)
         .space()
         .scale(height as f32)
         .literal(text)

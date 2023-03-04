@@ -522,8 +522,8 @@ impl Widget for TextWindow {
                         Ordering::Less => {
                             let ch = l[col];
                             match ch {
-                                '\t' => Some(('⇨', 80)),
-                                other => Some((other, 230)),
+                                '\t' => Some(('⇨', 127)),
+                                other => Some((other, 255)),
                             }
                         }
                         Ordering::Equal => {
@@ -532,7 +532,7 @@ impl Widget for TextWindow {
                             } else {
                                 '⏎'
                             };
-                            Some((char, 80))
+                            Some((char, 127))
                         }
                         _ => None,
                     })

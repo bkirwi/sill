@@ -1169,6 +1169,8 @@ fn main() -> anyhow::Result<()> {
         widget
     });
 
+    app.dither = true;
+
     app.run(&mut component);
 
     Ok(())
