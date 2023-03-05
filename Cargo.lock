@@ -61,7 +61,6 @@ dependencies = [
 [[package]]
 name = "armrest"
 version = "0.1.0"
-source = "git+https://github.com/bkirwi/armrest#04b5b969780448658603f5c2ce63efcb05997ae9"
 dependencies = [
  "cgmath",
  "flo_curves",

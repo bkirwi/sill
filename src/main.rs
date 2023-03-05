@@ -1169,7 +1169,7 @@ fn main() -> anyhow::Result<()> {
         widget
     });
 
-    app.dither = true;
+    app.dither = false;
 
     app.run(&mut component);
 

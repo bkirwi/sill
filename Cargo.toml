@@ -16,5 +16,5 @@ toml = "0.5.9"
 uuid = { version = "0.8.2", features = ["v4"] }
 xdg = "2.4.1"
 
-# armrest = { path = "../armrest", default-features = false }
-armrest = { git = "https://github.com/bkirwi/armrest", default-features = false }
+armrest = { path = "../armrest", default-features = false }
+#armrest = { git = "https://github.com/bkirwi/armrest", default-features = false }
