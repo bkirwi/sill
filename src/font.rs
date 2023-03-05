@@ -5,7 +5,7 @@ use rusttype::{Font, Scale};
 use std::hash::Hash;
 
 pub static FONT: Lazy<Font<'static>> = Lazy::new(|| {
-    let font_bytes: &[u8] = include_bytes!("../fonts/Inconsolata-Regular.ttf");
+    let font_bytes: &[u8] = include_bytes!("../fonts/Inconsolata-Medium.ttf");
     Font::from_bytes(font_bytes).unwrap()
 });
 
@@ -29,7 +29,7 @@ pub fn text_literal(height: i32, text: &str) -> TextFragment {
         .to_fragment()
 }
 
-#[derive(Hash, Clone, Copy)]
+#[derive(Hash, Clone, Copy, Eq, PartialEq)]
 pub struct Metrics {
     pub height: i32,
     pub width: i32,
@@ -40,7 +40,7 @@ impl Metrics {
     pub fn new(height: i32) -> Metrics {
         let scale = Scale::uniform(height as f32);
         let v_metrics = FONT.v_metrics(scale);
-        let h_metrics = FONT.glyph(' ').scaled(scale).h_metrics();
+        let h_metrics = FONT.glyph('W').scaled(scale).h_metrics();
         let width = h_metrics.advance_width.ceil() as i32;
 
         Metrics {
