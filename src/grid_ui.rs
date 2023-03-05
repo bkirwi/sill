@@ -1,20 +1,35 @@
-use crate::font::*;
-use armrest::libremarkable::cgmath::Vector2;
-use armrest::libremarkable::framebuffer::common::color;
-use armrest::libremarkable::framebuffer::FramebufferIO;
-use armrest::ui::{Cached, Canvas, Fragment, Side, View};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-const GRID_LINE_COLOR: color = color::GRAY(127);
-const GUIDE_LINE_COLOR: color = color::GRAY(127);
+use armrest::libremarkable::cgmath::Vector2;
+use armrest::libremarkable::framebuffer::common::color;
+use armrest::libremarkable::framebuffer::FramebufferIO;
+use armrest::ui::{Cached, Canvas, Fragment, Side, View};
+use font_kit::canvas::{Format, RasterizationOptions};
+use font_kit::font::Font;
+use font_kit::handle::Handle;
+use font_kit::hinting::HintingOptions;
+use once_cell::sync::Lazy;
+use pathfinder_geometry::transform2d::Transform2F;
+use pathfinder_geometry::vector::{Vector2F, Vector2I};
+
+use crate::font::*;
+
+const GRID_LINE_COLOR: color = color::GRAY(0x7F);
+const GUIDE_LINE_COLOR: color = color::GRAY(0x7F);
 
 pub type Coord = (usize, usize);
 
 // The width of the padding we put around a drawn grid. May or may not be coloured in.
 pub const GRID_BORDER: i32 = 4;
+
+pub static FONT_HANDLE: Lazy<Handle> = Lazy::new(|| {
+    let bytes = include_bytes!("../fonts/Inconsolata-Light.ttf");
+    Handle::from_memory(Arc::new(bytes.to_vec()), 0)
+});
 
 fn fill(canvas: &mut Canvas, xs: Range<i32>, ys: Range<i32>) {
     for y in ys {
@@ -91,10 +106,32 @@ impl GridCell {
 impl Fragment for GridCell {
     fn draw(&self, canvas: &mut Canvas) {
         if let Some((c, w)) = &self.char {
-            let weight = (*w) as f32 / 255.0;
-            text_literal(self.height, &c.to_string())
-                .with_weight(weight)
-                .draw(canvas);
+            let font = FONT_HANDLE.load().expect("good font");
+            if let Some(glyph_id) = font.glyph_for_char(*c) {
+                let size = Vector2I::new(self.height, self.height);
+                let mut font_canvas = font_kit::canvas::Canvas::new(size, Format::A8);
+                let point_size = self.height as f32;
+                font.rasterize_glyph(
+                    &mut font_canvas,
+                    glyph_id,
+                    point_size,
+                    Transform2F::from_translation(Vector2F::new(0.5, self.baseline as f32)),
+                    HintingOptions::Full(point_size),
+                    RasterizationOptions::Bilevel,
+                )
+                .expect("rasterizing a char");
+
+                for (y, row) in font_canvas
+                    .pixels
+                    .chunks_exact(font_canvas.stride)
+                    .enumerate()
+                {
+                    for (x, pixel) in row.iter().enumerate() {
+                        let weight = ((*pixel as u32) * (*w as u32)) / 255;
+                        canvas.write(x as i32, y as i32, color::GRAY(weight as u8));
+                    }
+                }
+            }
         }
 
         let base_pixel = canvas.bounds().top_left;
