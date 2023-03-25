@@ -29,7 +29,7 @@ pub fn text_literal(height: i32, text: &str) -> TextFragment {
         .to_fragment()
 }
 
-#[derive(Hash, Clone, Copy)]
+#[derive(Hash, Clone, Copy, Eq, PartialEq)]
 pub struct Metrics {
     pub height: i32,
     pub width: i32,

@@ -1,5 +1,6 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -27,7 +28,7 @@ pub type Coord = (usize, usize);
 pub const GRID_BORDER: i32 = 4;
 
 pub static FONT_HANDLE: Lazy<Handle> = Lazy::new(|| {
-    let bytes = include_bytes!("../fonts/Inconsolata-Light.ttf");
+    let bytes = include_bytes!("../fonts/Inconsolata-Medium.ttf");
     Handle::from_memory(Arc::new(bytes.to_vec()), 0)
 });
 
@@ -78,62 +79,27 @@ impl Fragment for GridBorder {
 }
 
 #[derive(Hash, Clone, Copy, Eq, PartialEq)]
-pub struct GridCell {
-    pub height: i32,
-    pub baseline: i32,
-    pub char: Option<(char, u8)>,
+pub struct CellDesc {
+    pub metrics: Metrics,
+    pub char: char,
+    pub weight: u8,
     pub underline: bool,
     pub draw_guidelines: bool,
 }
 
-impl GridCell {
-    pub fn new(
-        metrics: &Metrics,
-        char: Option<(char, u8)>,
-        underline: bool,
-        draw_guidelines: bool,
-    ) -> GridCell {
-        GridCell {
-            height: metrics.height,
-            baseline: metrics.baseline,
-            char,
-            underline,
-            draw_guidelines,
-        }
+pub struct GridCell {
+    desc: CellDesc,
+    char: Option<font_kit::canvas::Canvas>,
+}
+
+impl Hash for GridCell {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.desc.hash(state);
     }
 }
 
 impl Fragment for GridCell {
     fn draw(&self, canvas: &mut Canvas) {
-        if let Some((c, w)) = &self.char {
-            let font = FONT_HANDLE.load().expect("good font");
-            if let Some(glyph_id) = font.glyph_for_char(*c) {
-                let size = Vector2I::new(self.height, self.height);
-                let mut font_canvas = font_kit::canvas::Canvas::new(size, Format::A8);
-                let point_size = self.height as f32;
-                font.rasterize_glyph(
-                    &mut font_canvas,
-                    glyph_id,
-                    point_size,
-                    Transform2F::from_translation(Vector2F::new(0.5, self.baseline as f32)),
-                    HintingOptions::Full(point_size),
-                    RasterizationOptions::Bilevel,
-                )
-                .expect("rasterizing a char");
-
-                for (y, row) in font_canvas
-                    .pixels
-                    .chunks_exact(font_canvas.stride)
-                    .enumerate()
-                {
-                    for (x, pixel) in row.iter().enumerate() {
-                        let weight = ((*pixel as u32) * (*w as u32)) / 255;
-                        canvas.write(x as i32, y as i32, color::GRAY(weight as u8));
-                    }
-                }
-            }
-        }
-
         let base_pixel = canvas.bounds().top_left;
         let size = canvas.bounds().size();
 
@@ -146,46 +112,85 @@ impl Fragment for GridCell {
             canvas.write(x, y, combined);
         };
 
-        let top_line = self.baseline - size.y * 3 / 4;
-        let mid_line = self.baseline - size.y * 2 / 4;
-        let bottom_line = self.baseline - size.y * 1 / 4;
+        if let Some(font_canvas) = &self.char {
+            for (y, row) in font_canvas
+                .pixels
+                .chunks_exact(font_canvas.stride)
+                .enumerate()
+            {
+                for (x, pixel) in row.iter().enumerate() {
+                    let weight = ((*pixel as u32) * (self.desc.weight as u32)) / 255;
+                    darken(x as i32, y as i32, color::GRAY(weight as u8));
+                }
+            }
+        }
+
+        let baseline = self.desc.metrics.baseline;
+        let top_line = baseline - size.y * 3 / 4;
+        let mid_line = baseline - size.y * 2 / 4;
+        let bottom_line = baseline - size.y * 1 / 4;
         for y in 0..size.y {
             darken(0, y, GRID_LINE_COLOR);
         }
         for x in 1..size.x {
-            if self.draw_guidelines {
+            if self.desc.draw_guidelines {
                 darken(x, top_line, GUIDE_LINE_COLOR);
                 darken(x, mid_line, GUIDE_LINE_COLOR);
                 darken(x, bottom_line, GUIDE_LINE_COLOR);
             }
-            darken(x, self.baseline, GRID_LINE_COLOR);
-            darken(x, self.baseline + 1, GRID_LINE_COLOR);
-            if self.underline {
-                darken(x, self.baseline + 2, GRID_LINE_COLOR);
-                darken(x, self.baseline + 3, GRID_LINE_COLOR);
+            darken(x, baseline, GRID_LINE_COLOR);
+            darken(x, baseline + 1, GRID_LINE_COLOR);
+            if self.desc.underline {
+                darken(x, baseline + 2, GRID_LINE_COLOR);
+                darken(x, baseline + 3, GRID_LINE_COLOR);
             }
         }
     }
 }
 
 pub struct Atlas {
-    cache: RefCell<HashMap<GridCell, Rc<Cached<GridCell>>>>,
+    font: Font,
+    cache: RefCell<HashMap<CellDesc, Rc<Cached<GridCell>>>>,
 }
 
 impl Atlas {
     pub fn new() -> Atlas {
         Atlas {
+            font: FONT_HANDLE.load().expect("known-good font"),
             cache: RefCell::new(Default::default()),
         }
     }
 
-    pub fn get_cell(&self, cell: GridCell) -> Rc<Cached<GridCell>> {
+    fn mint_cell(&self, desc: CellDesc) -> Rc<Cached<GridCell>> {
+        let image = self.font.glyph_for_char(desc.char).map(|glyph_id| {
+            let metrics = desc.metrics;
+            let size = Vector2I::new(metrics.width, metrics.height);
+            let mut font_canvas = font_kit::canvas::Canvas::new(size, Format::A8);
+            let point_size = (metrics.height - 1) as f32;
+            self.font
+                .rasterize_glyph(
+                    &mut font_canvas,
+                    glyph_id,
+                    point_size,
+                    Transform2F::from_translation(Vector2F::new(0.5, metrics.baseline as f32)),
+                    HintingOptions::Full(point_size),
+                    RasterizationOptions::Bilevel,
+                )
+                .expect("rasterizing a char");
+            font_canvas
+        });
+        Rc::new(Cached::new(GridCell { desc, char: image }))
+    }
+
+    pub fn get_cell(&self, desc: CellDesc) -> Rc<Cached<GridCell>> {
         if let Ok(mut cache) = self.cache.try_borrow_mut() {
-            let value = cache.entry(cell).or_insert(Rc::new(Cached::new(cell)));
+            let value = cache
+                .entry(desc.clone())
+                .or_insert_with(|| self.mint_cell(desc));
             Rc::clone(value)
         } else {
             // Again, shouldn't be common, but it's good to be prepared!
-            Rc::new(Cached::new(cell))
+            self.mint_cell(desc)
         }
     }
 }

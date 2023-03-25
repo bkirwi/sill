@@ -688,9 +688,13 @@ impl Widget for Editor {
                     |row, col, mut template_view| {
                         let row = self.template_offset + row;
                         let maybe_char = self.text_stuff.templates.get(row);
-                        let grid =
-                            self.atlas
-                                .get_cell(GridCell::new(&self.metrics, None, false, true));
+                        let grid = self.atlas.get_cell(CellDesc {
+                            metrics: self.metrics,
+                            char: ' ',
+                            weight: 0,
+                            underline: false,
+                            draw_guidelines: true,
+                        });
                         if let Some(char_data) = maybe_char {
                             if let Some(template) = char_data.templates.get(col) {
                                 template_view.annotate(&template.ink);
@@ -1169,7 +1173,7 @@ fn main() -> anyhow::Result<()> {
         widget
     });
 
-    app.dither = false;
+    app.dither = true;
 
     app.run(&mut component);
 

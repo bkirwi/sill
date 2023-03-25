@@ -1,5 +1,5 @@
 use crate::font::Metrics;
-use crate::grid_ui::{draw_grid, Atlas, Coord, GridCell, GRID_BORDER};
+use crate::grid_ui::{draw_grid, Atlas, CellDesc, Coord, GridCell, GRID_BORDER};
 use crate::hwr::{ink_to_points, TextStuff};
 use crate::ink_type::InkType;
 use crate::text_buffer::{add_coord, diff_coord, Replace, TextBuffer};
@@ -517,8 +517,8 @@ impl Widget for TextWindow {
                 };
 
                 let line = self.buffer.contents.get(row);
-                let char = line
-                    .map(|l| match col.cmp(&l.len()) {
+                let (char, weight) = line
+                    .and_then(|l| match col.cmp(&l.len()) {
                         Ordering::Less => {
                             let ch = l[col];
                             match ch {
@@ -536,14 +536,15 @@ impl Widget for TextWindow {
                         }
                         _ => None,
                     })
-                    .unwrap_or(None);
+                    .unwrap_or((' ', 0));
 
-                let fragment = self.atlas.get_cell(GridCell::new(
-                    &self.grid_metrics,
+                let fragment = self.atlas.get_cell(CellDesc {
+                    metrics: self.grid_metrics,
                     char,
+                    weight,
                     underline,
                     draw_guidelines,
-                ));
+                });
                 view.draw(&*fragment);
             },
         );
